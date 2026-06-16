@@ -300,7 +300,7 @@ def main() -> None:
     if not db_path.exists():
         log.error(
             f"PTB-XL database CSV not found at {db_path}. "
-            "Run step01_data_download.py first."
+            "Run step01_data_load_and_visualise.py first."
         )
         sys.exit(1)
 
@@ -308,7 +308,7 @@ def main() -> None:
     log.info(f"Loaded {len(df):,} records from ptbxl_database.csv")
 
     # Try to load label_mapping from step01; fall back to built-in _SCP_TO_SUPERCLASS
-    label_map_path = ptbxl_root / "label_mapping.json"
+    label_map_path = out_dir / "label_mapping.json"
     if label_map_path.exists():
         with open(label_map_path) as f:
             label_mapping = json.load(f)

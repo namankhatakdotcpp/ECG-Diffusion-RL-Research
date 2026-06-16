@@ -1,50 +1,86 @@
 # ECG Diffusion + RL Research
 **HCLTech Internship | Naman Khatak | June 2026**
 
-## Project Structure
+## Project in One Sentence
 
-Two parallel tracks targeting a single publication:
+Train a Transformer-backbone Diffusion Model to generate realistic synthetic
+ECGs for multiple disease classes, then fine-tune it with PPO/GRPO
+Reinforcement Learning using a clinically grounded reward function to make the
+generated signals more physiologically valid.
+
+## Architecture
 
 ```
-TRACK A — GENERATION (this repo's primary focus)
-  PTB-XL → Preprocessing → Baseline Diffusion (SSSD-ECG style)
-         → Disease-to-Healthy Translation (MI → NORM)
-         → PPO/GRPO RL Fine-Tuning with Clinical Reward
-         → RL-Optimised ECG Generation → TSTR Evaluation
-
-TRACK B — CLASSIFICATION (teammate's track, shared data pipeline)
-  PTB-XL → Preprocessing → Multimodal Transformer
-         → 7-class multi-label ECG classification
-         → Doubles as the TSTR evaluator for Track A
+PTB-XL Dataset (multiple disease classes)
+        │
+        ▼
+  Preprocessing
+        │
+        ▼
+  Transformer-Diffusion Model
+  ┌─────────────────────────────────────────┐
+  │  Class Label Embedding (disease type)    │
+  │          +                               │
+  │  Time Step Embedding (diffusion step t)  │
+  │          │                               │
+  │          ▼                               │
+  │  Transformer Encoder Backbone            │
+  │  (replaces the standard UNet)            │
+  │  - Multi-head self-attention             │
+  │  - Captures long-range ECG dependencies  │
+  │          │                               │
+  │          ▼                               │
+  │  Predicts noise ε at each timestep       │
+  └─────────────────────────────────────────┘
+        │
+        ▼
+  Generate synthetic ECG for any disease class
+        │
+        ▼
+  Clinical Reward Function
+  (morphology + HRV + realism + diagnostic utility)
+        │
+        ▼
+  PPO / GRPO RL Fine-Tuning
+        │
+        ▼
+  RL-Optimised ECG Generation
+        │
+        ▼
+  Evaluation (DTW, MMD, Morphological Validity, TSTR) + Ablation Study
 ```
 
 ## Directory Layout
 
 ```
-ecg_research/
-├── config.yaml                    # ALL shared hyperparameters and paths
+ECG/
+├── config.yaml                            # single source of truth — all params/paths
 ├── requirements.txt
-├── utils/                         # shared helpers (config, logging, seeding, metrics)
+├── README.md
+├── utils/                                  # shared helpers
+│   ├── config.py    — load_config()
+│   ├── logger.py    — get_logger()
+│   ├── seed.py       — set_seed()
+│   └── metrics.py    — dtw_distance, mmd_score, per_class_f1, morphological_validity
 │
-├── step01_data_download.py        # download PTB-XL (and MIT-BIH)
-├── step02_preprocessing.py        # normalise, segment, split
-├── step03_eda_and_validation.py   # class distribution, signal quality checks
-├── step04_baseline_diffusion.py   # train SSSD-ECG style diffusion model
-├── step05_diffusion_eval.py       # FID-style, DTW, MMD evaluation
-├── step06_classifier_track_b.py   # (teammate) multimodal Transformer classifier
-├── step07_reward_function.py      # clinical reward: PQRST + classifier confidence
-├── step08_rl_finetuning.py        # PPO / GRPO fine-tuning of diffusion model
-├── step09_tstr_evaluation.py      # Train-on-Synthetic Test-on-Real evaluation
-└── step10_ablation_study.py       # ablation over reward weights / RL algorithms
+├── step01_data_load_and_visualise.py       # download, verify, visualise PTB-XL
+├── step02_preprocessing.py                 # filter, normalise, fold split, save arrays
+├── step03_eda_and_class_mapping.py         # decide final classes, morphology/HRV stats
+├── step04_transformer_diffusion.py         # train the Transformer-backbone diffusion model
+├── step05_baseline_eval.py                 # DTW/MMD/FED/Morph/TSTR — Table 1
+├── step06_reward_function.py               # clinical reward: morphology+HRV+realism+diag
+├── step07_rl_finetuning.py                  # PPO/GRPO RL fine-tuning with KL regularisation
+├── step08_final_evaluation.py               # baseline vs RL head-to-head — Table 2 + figures
+├── step09_ablation_study.py                 # 6-variant reward-component ablation — Table 3
 │
-├── data/
-│   ├── ptbxl/                     # raw PTB-XL download
-│   └── mitbih/                    # raw MIT-BIH download
-└── outputs/
-    ├── processed/                 # preprocessed tensors / DataLoaders
-    ├── models/                    # saved checkpoints
-    ├── generated/                 # synthetic ECG waveforms
-    └── results/                   # evaluation tables, plots
+├── data/                                    (gitignored)
+│   ├── ptbxl/
+│   └── mitbih/                              (secondary, not used by the core pipeline)
+└── outputs/                                 (gitignored)
+    ├── processed/
+    ├── models/
+    ├── generated/
+    └── results/
 ```
 
 ## Quick Start
@@ -57,17 +93,23 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 # 3. Run the pipeline in order
-python step01_data_download.py
-python step02_preprocessing.py
-python step03_eda_and_validation.py
-python step04_baseline_diffusion.py
-python step05_diffusion_eval.py
-# step06 is the teammate's classifier — needed before step07+
-python step07_reward_function.py
-python step08_rl_finetuning.py
-python step09_tstr_evaluation.py
-python step10_ablation_study.py
+python step01_data_load_and_visualise.py   # ~10 min (download + visualise)
+python step02_preprocessing.py             # ~20 min
+python step03_eda_and_class_mapping.py     # ~30 min (morphology extraction)
+python step04_transformer_diffusion.py     # ~hours (GPU needed)
+python step05_baseline_eval.py             # ~1 hour
+python step06_reward_function.py           # ~30 min
+python step07_rl_finetuning.py             # ~hours (GPU needed)
+python step08_final_evaluation.py          # ~1 hour
+python step09_ablation_study.py            # ~hours (6 RL runs)
 ```
+
+## Hardware Requirements
+
+- GPU strongly recommended for step04 (diffusion training) and step07
+  (RL fine-tuning) — both run in minutes on a modern GPU vs. hours on CPU.
+- ~2 GB disk for PTB-XL raw data, a few hundred MB for processed arrays and
+  checkpoints.
 
 ## Configuration
 
@@ -77,8 +119,8 @@ settings in step files. Load it from any script with:
 ```python
 from utils import load_config
 cfg = load_config()
-print(cfg.diffusion.T)       # 1000
-print(cfg.paths.data.ptbxl)  # absolute path resolved at load time
+print(cfg.diffusion.T)            # 1000
+print(cfg.paths.data.ptbxl)       # resolved path to PTB-XL
 ```
 
 ## Reproducibility
@@ -90,6 +132,9 @@ Each step file calls `set_seed(seed)` at the top:
 from utils import set_seed
 set_seed(cfg.seeds[0])
 ```
+
+Evaluation steps (05, 08, 09) report metrics as mean ± std across all three
+seeds.
 
 ## Experiment Tracking
 

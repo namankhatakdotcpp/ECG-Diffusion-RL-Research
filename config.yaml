@@ -86,7 +86,7 @@ diffusion:
   patch_size: 20              # temporal patch size: 1000 / 20 = 50 patches per lead
   n_heads: 8                  # multi-head attention heads
   n_transformer_layers: 6     # Transformer depth
-  n_layers: 6                 # kept for UNet backward-compat (step04_baseline_diffusion)
+  n_layers: 6                 # kept for UNet backward-compat (unused by current Transformer backbone)
   d_ff: 1024                  # FFN hidden dimension (4× model_dim)
   dropout: 0.1
   # Training
