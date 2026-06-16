@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Data & generated artifacts (large, regenerable from pipeline)
+data/
+outputs/
+logs/
+
+# OS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/

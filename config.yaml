@@ -1,0 +1,185 @@
+# =============================================================================
+# config.yaml — Single source of truth for ECG Diffusion + RL Research
+# HCLTech Internship | Naman Khatak | June 2026
+# =============================================================================
+
+project:
+  name: ecg_research
+  description: "ECG Diffusion + PPO/GRPO RL fine-tuning for disease-to-healthy translation"
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+paths:
+  data:
+    ptbxl: data/ptbxl/
+    mitbih: data/mitbih/
+  outputs:
+    processed: outputs/processed/
+    models: outputs/models/
+    generated: outputs/generated/
+    results: outputs/results/
+  logs: logs/
+
+# ---------------------------------------------------------------------------
+# PTB-XL Dataset Settings
+# ---------------------------------------------------------------------------
+ptbxl:
+  sampling_rate: 100          # Hz (100 or 500 available; 100 is standard)
+  lead_names:
+    - I
+    - II
+    - III
+    - aVR
+    - aVL
+    - aVF
+    - V1
+    - V2
+    - V3
+    - V4
+    - V5
+    - V6
+  classes:
+    - NORM
+    - MI
+    - STTC
+    - CD
+    - HYP
+    - AFIB
+    - OTHER
+  n_classes: 7
+  signal_length: 1000         # samples at 100 Hz → 10 seconds
+  train_fold: [1, 2, 3, 4, 5, 6, 7, 8]
+  val_fold: [9]
+  test_fold: [10]
+  min_class_samples: 200     # drop classes with fewer training records than this
+
+# ---------------------------------------------------------------------------
+# Preprocessing Settings
+# ---------------------------------------------------------------------------
+preprocessing:
+  bandpass_low: 0.5           # Hz — removes baseline wander
+  bandpass_high: 40.0         # Hz — removes EMG / high-freq noise
+  filter_order: 4             # Butterworth filter order
+  baseline_window_sec: 0.5    # seconds for median-filter baseline correction
+  clip_range: [-4.0, 4.0]    # post-normalisation clip (removes spike artifacts)
+  batch_size: 500             # records loaded per processing batch
+  multilabel_confidence: 50.0 # minimum SCP confidence to assign a label
+
+# ---------------------------------------------------------------------------
+# Disease-to-Healthy Translation Target
+# ---------------------------------------------------------------------------
+translation:
+  source_class: MI            # Myocardial Infarction → translate to healthy sinus
+  target_class: NORM
+
+# ---------------------------------------------------------------------------
+# Diffusion Model Hyperparameters — Transformer-backbone (primary model)
+# Architecture: patchified ECG → BERT-style Transformer → noise prediction
+# ---------------------------------------------------------------------------
+diffusion:
+  # Noise schedule
+  T: 1000                     # diffusion timesteps
+  beta_schedule: cosine
+  # Architecture (ECGTransformerDiffusion)
+  model_dim: 256              # embedding / attention dimension
+  patch_size: 20              # temporal patch size: 1000 / 20 = 50 patches per lead
+  n_heads: 8                  # multi-head attention heads
+  n_transformer_layers: 6     # Transformer depth
+  n_layers: 6                 # kept for UNet backward-compat (step04_baseline_diffusion)
+  d_ff: 1024                  # FFN hidden dimension (4× model_dim)
+  dropout: 0.1
+  # Training
+  n_epochs: 200
+  batch_size: 32
+  lr: 2.0e-4
+  weight_decay: 1.0e-4
+  ema_decay: 0.9999
+  grad_clip: 1.0
+  save_every: 25              # checkpoint + validation every N epochs
+  # Inference
+  ddim_steps: 50              # DDIM sampling steps (η=0, deterministic)
+  sample_timesteps: 50        # alias kept for backward-compat
+
+# ---------------------------------------------------------------------------
+# Classifier Hyperparameters (Track B — shared for TSTR evaluation)
+# ---------------------------------------------------------------------------
+classifier:
+  n_epochs: 50
+  lr: 1.0e-4
+  batch_size: 32
+  loss: bce                   # binary cross-entropy (sigmoid / one-vs-rest)
+  weight_decay: 1.0e-4
+  patience: 10                # early stopping patience
+  d_model: 256
+  n_heads: 8
+  n_layers: 4
+  dropout: 0.1
+
+# ---------------------------------------------------------------------------
+# Clinical Reward Function (step06_reward_function.py)
+# ---------------------------------------------------------------------------
+reward:
+  weights:                    # composite reward weights (must sum to 1.0)
+    morph: 0.3                # MorphologyReward      — PQRST interval matching
+    hrv:   0.3                # HRVReward             — HRV plausibility
+    real:  0.2                # RealismReward         — PCA manifold proximity
+    diag:  0.2                # DiagnosticUtilityReward — classifier confidence
+  pca_components: 50          # PCA components for RealismReward
+  pca_n_train_samples: 2000   # training records used to fit PCA
+
+# ---------------------------------------------------------------------------
+# RL Fine-Tuning Hyperparameters (PPO / GRPO)
+# ---------------------------------------------------------------------------
+rl:
+  algorithm: ppo              # "ppo" or "grpo"
+  # PPO hyperparameters
+  ppo_clip: 0.2               # ε for clipped surrogate objective
+  n_rollouts: 4               # trajectories collected per PPO iteration
+  n_ppo_epochs: 4             # PPO update passes per rollout batch
+  # GRPO hyperparameters
+  grpo_groups: 8              # group size G for GRPO
+  # Shared
+  kl_beta: 0.01               # β — KL penalty weight vs. frozen reference model
+  rl_lr: 1.0e-5               # learning rate for RL fine-tuning
+  grad_clip: 0.5              # gradient clip (tighter than diffusion training)
+  rl_iterations: 50           # total RL training iterations
+  ddim_rollout_steps: 20      # DDIM steps per rollout (< eval for speed)
+  rl_eta: 1.0                 # stochasticity: 1.0 = full DDPM, 0.0 = det. DDIM
+  baseline_decay: 0.99        # EMA decay for PPO advantage baseline
+  save_every_iters: 10        # checkpoint every N iterations
+  plot_every_iters: 5         # progress plot every N iterations
+
+# ---------------------------------------------------------------------------
+# Evaluation (step05_baseline_eval.py)
+# ---------------------------------------------------------------------------
+eval:
+  n_synthetic_per_class: 500  # ECGs generated per class for evaluation
+  n_morphology_eval: 100      # subset analysed by neurokit2 (speed)
+  dtw_subsample: 50           # per-class subsample for DTW nearest-neighbour search
+  fed_encoder_epochs: 20      # epochs to train the FED CNN encoder
+  fed_encoder_lr: 1.0e-3
+  fed_encoder_batch_size: 64
+  tstr_epochs: 30             # epochs for TSTR / TRTR classifier
+  tstr_lr: 1.0e-3
+  tstr_batch_size: 64
+  seeds: [42, 123, 456]       # seeds used in the evaluation loop
+
+# ---------------------------------------------------------------------------
+# Reproducibility
+# ---------------------------------------------------------------------------
+seeds: [42, 123, 456]         # 3-seed runs for confidence intervals
+
+# ---------------------------------------------------------------------------
+# Device
+# ---------------------------------------------------------------------------
+device: auto                  # "auto" → cuda if available, else cpu
+
+# ---------------------------------------------------------------------------
+# Logging / Experiment Tracking
+# ---------------------------------------------------------------------------
+logging:
+  use_wandb: false            # set true to enable W&B tracking
+  wandb_project: ecg-diffusion-rl
+  wandb_entity: null          # your W&B username / team
+  log_interval: 50            # log every N steps
