@@ -39,7 +39,7 @@ from __future__ import annotations
 import ast
 import json
 import sys
-import time
+import zipfile
 from collections import Counter
 from pathlib import Path
 
@@ -88,24 +88,50 @@ LEAD_COLORS = [
 # Stage 1 — Download
 # ──────────────────────────────────────────────────────────────────────────────
 
+# NOTE: PhysioNet wget/wfdb download replaced with local ZIP extraction.
+# Download is unreliable (timeouts). Manually download the ZIP from:
+# https://physionet.org/content/ptb-xl/1.0.3/
+# and place it in the project root before running.
+
+ZIP_NAME = "ptb-xl-a-large-publicly-available-electrocardiography-dataset-1.0.3.zip"
+
+
 def _download_ptbxl(dest: Path, log) -> None:
     sentinel = dest / "ptbxl_database.csv"
     if sentinel.exists():
-        log.info(f"PTB-XL already present at {dest} — skipping download.")
+        log.info("✓ PTB-XL already extracted. Skipping.")
         return
-    log.info(f"Downloading PTB-XL → {dest}  (~1.7GB, this may take 5-10 minutes) …")
-    dest.mkdir(parents=True, exist_ok=True)
-    t0 = time.time()
-    try:
-        wfdb.dl_database("ptb-xl", str(dest))
-    except Exception as exc:
-        log.error(f"wfdb.dl_database failed: {exc}")
-        log.error(
-            "Manual fallback: wget -r -N -c -np "
-            "https://physionet.org/files/ptb-xl/1.0.3/ -P data/ptbxl/"
+
+    search_dirs = [
+        Path("."),
+        Path(".."),
+        Path.home(),
+    ]
+    zip_path = None
+    for d in search_dirs:
+        candidate = d / ZIP_NAME
+        if candidate.exists():
+            zip_path = candidate.resolve()
+            break
+
+    if zip_path is None:
+        print(
+            f"\n[ERROR] PTB-XL ZIP not found.\n"
+            f"  Expected filename : {ZIP_NAME}\n"
+            f"  Searched in       : ./, ../, ~/\n"
+            f"\n"
+            f"  Download from: https://physionet.org/content/ptb-xl/1.0.3/\n"
+            f"  Then place the ZIP in the project root and re-run.\n"
         )
-        raise
-    log.info(f"PTB-XL download complete in {(time.time() - t0) / 60:.1f} min")
+        sys.exit(1)
+
+    log.info(f"Found ZIP at {zip_path} — extracting into data/ …")
+    dest.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        members = zf.namelist()
+        for member in members:
+            zf.extract(member, path=dest.parent)
+    log.info("✓ Extraction complete.")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
