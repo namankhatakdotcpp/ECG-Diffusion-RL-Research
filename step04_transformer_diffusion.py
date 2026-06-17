@@ -534,8 +534,8 @@ def generate_ecg(
     out = samples.cpu().float().numpy().transpose(0, 2, 1)
 
     if stats is not None:
-        mu    = np.array(stats["mean"], dtype=np.float32)   # (12,)
-        sigma = np.array(stats["std"],  dtype=np.float32)   # (12,)
+        mu    = np.array(stats["per_lead_mean"], dtype=np.float32)   # (12,)
+        sigma = np.array(stats["per_lead_std"],  dtype=np.float32)   # (12,)
         out   = out * sigma[np.newaxis, np.newaxis, :] + mu[np.newaxis, np.newaxis, :]
 
     return out
