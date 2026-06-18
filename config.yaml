@@ -121,10 +121,10 @@ classifier:
 # ---------------------------------------------------------------------------
 reward:
   weights:                    # composite reward weights (must sum to 1.0)
-    morph: 0.3                # MorphologyReward      — PQRST interval matching
-    hrv:   0.3                # HRVReward             — HRV plausibility
-    real:  0.2                # RealismReward         — PCA manifold proximity
-    diag:  0.2                # DiagnosticUtilityReward — classifier confidence
+    morph: 0.4                # MorphologyReward      — PQRST interval matching
+    hrv:   0.4                # HRVReward             — HRV plausibility
+    real:  0.15               # RealismReward         — PCA manifold proximity
+    diag:  0.05               # DiagnosticUtilityReward — classifier confidence
   pca_components: 50          # PCA components for RealismReward
   pca_n_train_samples: 2000   # training records used to fit PCA
 
@@ -140,8 +140,8 @@ rl:
   # GRPO hyperparameters
   grpo_groups: 8              # group size G for GRPO
   # Shared
-  kl_beta: 0.01               # β — KL penalty weight vs. frozen reference model
-  rl_lr: 1.0e-5               # learning rate for RL fine-tuning
+  kl_beta: 0.1                # β — KL penalty weight vs. frozen reference model
+  rl_lr: 3.0e-6               # learning rate for RL fine-tuning
   grad_clip: 0.5              # gradient clip (tighter than diffusion training)
   rl_iterations: 50           # total RL training iterations
   ddim_rollout_steps: 20      # DDIM steps per rollout (< eval for speed)
