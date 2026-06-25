@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import ast
 import json
+import shutil
 import sys
 import zipfile
 from collections import Counter
@@ -96,9 +97,16 @@ LEAD_COLORS = [
 ZIP_NAME = "ptb-xl-a-large-publicly-available-electrocardiography-dataset-1.0.3.zip"
 
 
+def _ptbxl_layout_ok(dest: Path) -> bool:
+    """True only if BOTH the metadata CSV and the records100 waveform tree
+    are present — the CSV alone is not sufficient evidence of a complete
+    extraction (it can exist on its own if someone copied just that file).
+    """
+    return (dest / "ptbxl_database.csv").exists() and (dest / "records100").is_dir()
+
+
 def _download_ptbxl(dest: Path, log) -> None:
-    sentinel = dest / "ptbxl_database.csv"
-    if sentinel.exists():
+    if _ptbxl_layout_ok(dest):
         log.info("✓ PTB-XL already extracted. Skipping.")
         return
 
@@ -116,7 +124,8 @@ def _download_ptbxl(dest: Path, log) -> None:
 
     if zip_path is None:
         print(
-            f"\n[ERROR] PTB-XL ZIP not found.\n"
+            f"\n[ERROR] PTB-XL ZIP not found, and {dest} is missing or incomplete\n"
+            f"  (needs both ptbxl_database.csv and a records100/ folder).\n"
             f"  Expected filename : {ZIP_NAME}\n"
             f"  Searched in       : ./, ../, ~/\n"
             f"\n"
@@ -125,13 +134,51 @@ def _download_ptbxl(dest: Path, log) -> None:
         )
         sys.exit(1)
 
-    log.info(f"Found ZIP at {zip_path} — extracting into data/ …")
-    dest.mkdir(parents=True, exist_ok=True)
+    # Extract into a scratch staging dir first — PhysioNet's ZIP wraps
+    # everything in its own top-level folder name (NOT "ptbxl/"), so we
+    # can't assume the internal layout. Find wherever ptbxl_database.csv
+    # actually landed, then flatten that directory's contents into `dest`.
+    staging = dest.parent / "_ptbxl_extract_staging"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+
+    log.info(f"Found ZIP at {zip_path} — extracting (staging) …")
     with zipfile.ZipFile(zip_path, "r") as zf:
-        members = zf.namelist()
-        for member in members:
-            zf.extract(member, path=dest.parent)
-    log.info("✓ Extraction complete.")
+        zf.extractall(path=staging)
+
+    csv_matches = list(staging.rglob("ptbxl_database.csv"))
+    if not csv_matches:
+        shutil.rmtree(staging)
+        print(
+            f"\n[ERROR] Extracted {zip_path} but found no ptbxl_database.csv anywhere "
+            f"inside it.\n  The ZIP may be corrupt or incomplete — re-download it.\n"
+        )
+        sys.exit(1)
+
+    data_root = csv_matches[0].parent
+    log.info(f"Found dataset root inside ZIP at {data_root} — moving into {dest} …")
+    dest.mkdir(parents=True, exist_ok=True)
+    for item in data_root.iterdir():
+        target = dest / item.name
+        if target.exists():
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+        shutil.move(str(item), str(target))
+
+    shutil.rmtree(staging)
+
+    if not _ptbxl_layout_ok(dest):
+        print(
+            f"\n[ERROR] Extraction finished but {dest} still doesn't have both "
+            f"ptbxl_database.csv and records100/ — the ZIP may be missing the "
+            f"waveform files. Re-download from physionet.org and retry.\n"
+        )
+        sys.exit(1)
+
+    log.info("✓ Extraction complete and verified (ptbxl_database.csv + records100/ present).")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
