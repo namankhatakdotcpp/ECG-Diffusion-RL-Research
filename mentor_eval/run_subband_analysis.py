@@ -59,7 +59,8 @@ def main() -> None:
 
     from mentor_eval.write_subband_summary import write_subband_summary
     write_subband_summary(cfg)
-    print("\n✓ SUMMARY.md (re)generated under outputs/mentor_review/subband_analysis/")
+    from mentor_eval.subband_features import subband_output_dir
+    print(f"\n✓ SUMMARY.md (re)generated under {subband_output_dir(cfg)}/")
 
 
 if __name__ == "__main__":

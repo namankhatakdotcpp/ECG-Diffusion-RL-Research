@@ -43,12 +43,25 @@ Confirmed with the project owner before implementation.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pywt
 
 WAVELET = "bior4.4"
 LEVELS = 3
 SUBBAND_NAMES = ["A3", "D3", "D2", "D1"]  # approximation, then details coarsest (D3) to finest (D1)
+
+# Top-level output folder name, a sibling of mentor_review/ under outputs/
+# (not nested inside it) — single source of truth for every subband_*.py
+# script and write_subband_summary.py.
+SUBBAND_OUTPUT_DIRNAME = "sharma_inspired_analysis"
+
+
+def subband_output_dir(cfg) -> Path:
+    """outputs/sharma_inspired_analysis/ — resolved from cfg, not hardcoded
+    per-caller."""
+    return Path(cfg.paths.outputs.results).parent / SUBBAND_OUTPUT_DIRNAME
 
 # Clinical labels, ordered to match SUBBAND_NAMES — analogous to the paper's
 # A6/D6/D5/D4 roles, re-derived for our sampling rate (see module docstring).

@@ -16,8 +16,8 @@ ITEM 2 — within-class variation box plots (mirrors Fig. 7)
   absent.
 
 Writes:
-  outputs/mentor_review/subband_analysis/subband_energy_table.csv
-  outputs/mentor_review/subband_analysis/boxplot_<subband>.png
+  outputs/sharma_inspired_analysis/subband_energy_table.csv
+  outputs/sharma_inspired_analysis/boxplot_<subband>.png
 
 Usage:
     python -m mentor_eval.subband_decomposition [--ckpt PATH] [--out-dir PATH]
@@ -45,6 +45,7 @@ from mentor_eval.class_mapping import (
 from mentor_eval.checkpoint_utils import load_checkpoint, generate_for_class
 from mentor_eval.subband_features import (
     SUBBAND_NAMES, SUBBAND_CLINICAL_LABEL, subband_frequency_ranges, subband_energy_per_lead,
+    subband_output_dir,
 )
 
 PUBSTYLE = {
@@ -211,7 +212,7 @@ def main() -> None:
 
     ptbxl_dir = Path(cfg.paths.data.ptbxl)
     ckpt_path = Path(args.ckpt) if args.ckpt else Path(cfg.paths.outputs.models) / "diffusion_best.pt"
-    out_dir = Path(args.out_dir) if args.out_dir else Path(cfg.paths.outputs.results).parent / "mentor_review" / "subband_analysis"
+    out_dir = Path(args.out_dir) if args.out_dir else subband_output_dir(cfg)
     lead_names = list(cfg.ptbxl.lead_names)
     out_dir.mkdir(parents=True, exist_ok=True)
 

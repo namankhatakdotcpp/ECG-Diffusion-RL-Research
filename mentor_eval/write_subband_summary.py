@@ -1,8 +1,14 @@
 """
 mentor_eval/write_subband_summary.py — generate
-outputs/mentor_review/subband_analysis/SUMMARY.md by inspecting what
-actually exists on disk (never hardcodes "done"), same convention as
+outputs/sharma_inspired_analysis/SUMMARY.md by inspecting what actually
+exists on disk (never hardcodes "done"), same convention as
 mentor_eval/write_summary.py.
+
+NOTE: this folder is a top-level sibling of outputs/mentor_review/, NOT
+nested inside it — only item 5 (the plain-table confusion matrix) still
+lives under outputs/mentor_review/classification_validation/, since that
+file is part of the original mentor_eval pipeline's output, just with an
+additive second output format.
 """
 
 from __future__ import annotations
@@ -11,7 +17,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from mentor_eval.subband_features import SUBBAND_NAMES, SUBBAND_CLINICAL_LABEL, subband_frequency_ranges
+from mentor_eval.subband_features import (
+    SUBBAND_NAMES, SUBBAND_CLINICAL_LABEL, subband_frequency_ranges, subband_output_dir,
+)
 
 
 def _section(title: str, lines: list[str]) -> str:
@@ -19,18 +27,19 @@ def _section(title: str, lines: list[str]) -> str:
 
 
 def write_subband_summary(cfg) -> Path:
-    base = Path(cfg.paths.outputs.results).parent / "mentor_review" / "subband_analysis"
+    base = subband_output_dir(cfg)
     out_path = base / "SUMMARY.md"
 
     md = []
-    md.append("# Mentor Review — Subband (MEES-style) Analysis Summary\n")
+    md.append("# Sharma-Inspired Subband (MEES-style) Analysis Summary\n")
     md.append(
-        "This is an additional set of figures/metrics on top of the main `mentor_eval/` "
-        "pipeline (see `../SUMMARY.md`), following the multiscale-energy approach of "
-        "Sharma, Tripathy & Dandapat (IEEE TBME 2015) — wavelet subband decomposition, "
-        "within-class variation box plots, an annotated single-beat figure, and "
-        "subband-level similarity metrics. Nothing already built was replaced; this "
-        "folder is purely additive.\n"
+        "This is an additional, top-level output folder (a sibling of "
+        "`outputs/mentor_review/`, not nested inside it) on top of the main "
+        "`mentor_eval/` pipeline (see `../mentor_review/SUMMARY.md`), following the "
+        "multiscale-energy approach of Sharma, Tripathy & Dandapat (IEEE TBME 2015) — "
+        "wavelet subband decomposition, within-class variation box plots, an annotated "
+        "single-beat figure, and subband-level similarity metrics. Nothing already "
+        "built was replaced; this folder is purely additive.\n"
     )
 
     fs = 100.0
@@ -110,13 +119,16 @@ def write_subband_summary(cfg) -> Path:
     md.append(_section("4. Subband-level similarity metrics (extends item 8)", lines))
 
     # ── Item 5 ───────────────────────────────────────────────────────────────
-    cv_dir = base.parent / "classification_validation"
+    # classification_validation/ stays under outputs/mentor_review/ (it's part
+    # of the original pipeline's output) — NOT under this folder, and NOT
+    # derived from `base` since base is now a top-level sibling, not nested.
+    cv_dir = Path(cfg.paths.outputs.results).parent / "mentor_review" / "classification_validation"
     real_plain = cv_dir / "confusion_matrix_real_plain.txt"
     gen_plain = cv_dir / "confusion_matrix_generated_plain.txt"
     lines = []
     if real_plain.exists():
         lines.append("Plain-table confusion matrix (real data) — same numbers as the "
-                      "colored heatmap in `../classification_validation/confusion_matrix_real.png`, "
+                      "colored heatmap in `../mentor_review/classification_validation/confusion_matrix_real.png`, "
                       "presented as a plain numeric grid (Sharma Table IV/V style):")
         lines.append("```\n" + real_plain.read_text().strip() + "\n```")
     else:

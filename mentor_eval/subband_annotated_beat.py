@@ -10,7 +10,7 @@ beat boundaries — this module does NOT redetect anything, it only draws
 annotations over boundaries already computed by that function.
 
 Writes:
-  outputs/mentor_review/subband_analysis/annotated_beat_<class>.png
+  outputs/sharma_inspired_analysis/annotated_beat_<class>.png
 
 Usage:
     python -m mentor_eval.subband_annotated_beat [--lead V1] [--out-dir PATH]
@@ -35,6 +35,7 @@ from mentor_eval.class_mapping import (
     MENTOR_CLASSES, load_ptbxl_database, filter_to_mentor_classes,
 )
 from mentor_eval.zoomed_clinical import delineate_one_beat, LEAD_II_IDX
+from mentor_eval.subband_features import subband_output_dir
 
 PUBSTYLE = {
     "font.size": 11, "font.family": "sans-serif",
@@ -166,7 +167,7 @@ def main() -> None:
     set_seed(args.seed)
 
     ptbxl_dir = Path(cfg.paths.data.ptbxl)
-    out_dir = Path(args.out_dir) if args.out_dir else Path(cfg.paths.outputs.results).parent / "mentor_review" / "subband_analysis"
+    out_dir = Path(args.out_dir) if args.out_dir else subband_output_dir(cfg)
     lead_names = list(cfg.ptbxl.lead_names)
 
     run(ptbxl_dir, out_dir, args.lead, lead_names, args.seed, log)

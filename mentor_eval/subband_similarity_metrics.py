@@ -19,8 +19,8 @@ REQUIRES outputs/models/diffusion_best.pt — prints [BLOCKED] and writes
 nothing if absent.
 
 Writes:
-  outputs/mentor_review/subband_analysis/subband_similarity_metrics.csv
-  outputs/mentor_review/subband_analysis/subband_similarity_README.md
+  outputs/sharma_inspired_analysis/subband_similarity_metrics.csv
+  outputs/sharma_inspired_analysis/subband_similarity_README.md
 
 Usage:
     python -m mentor_eval.subband_similarity_metrics [--ckpt PATH] [--out-dir PATH]
@@ -46,7 +46,9 @@ from mentor_eval.similarity_metrics import (
     mahalanobis_distance, bhattacharyya_distance, matched_cosine_similarity,
     MIN_SAMPLES_FOR_COVARIANCE_MULTIPLIER,
 )
-from mentor_eval.subband_features import SUBBAND_NAMES, SUBBAND_CLINICAL_LABEL, extract_subband_energy_batch
+from mentor_eval.subband_features import (
+    SUBBAND_NAMES, SUBBAND_CLINICAL_LABEL, extract_subband_energy_batch, subband_output_dir,
+)
 
 BOX_CLASSES = ["Normal", "STEMI", "NSTEMI"]  # AFIB excluded - no trained model class
 
@@ -196,7 +198,7 @@ def main() -> None:
     set_seed(args.seed)
 
     ckpt_path = Path(args.ckpt) if args.ckpt else Path(cfg.paths.outputs.models) / "diffusion_best.pt"
-    out_dir = Path(args.out_dir) if args.out_dir else Path(cfg.paths.outputs.results).parent / "mentor_review" / "subband_analysis"
+    out_dir = Path(args.out_dir) if args.out_dir else subband_output_dir(cfg)
 
     run(ckpt_path, out_dir, cfg, args.n_per_class, args.seed, log)
     print(f"✓ Subband similarity metrics written to {out_dir}")
