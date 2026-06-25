@@ -144,6 +144,22 @@ def train_classifier(X_train, y_train, X_val, y_val, n_classes: int, device: str
     return model
 
 
+def write_plain_confusion_table(cm: np.ndarray, class_names: list[str], out_path: Path, title: str) -> None:
+    """Plain numeric confusion-matrix grid (actual=rows, predicted=columns,
+    no color), matching Sharma et al.'s Table IV/V presentation style. Kept
+    as a second output alongside the colored heatmap figure, not a
+    replacement for it.
+    """
+    col_w = max(len(c) for c in class_names + ["Actual/Predicted"]) + 2
+    header = "Actual/Predicted".ljust(col_w) + "".join(c.rjust(col_w) for c in class_names)
+    lines = [title, header]
+    for i, row_name in enumerate(class_names):
+        row = row_name.ljust(col_w) + "".join(str(cm[i, j]).rjust(col_w) for j in range(len(class_names)))
+        lines.append(row)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(lines) + "\n")
+
+
 def evaluate_classifier(model, X, y, n_classes, device, class_names, out_path_cm: Path, title: str):
     Xt = torch.from_numpy(X.transpose(0, 2, 1)).float().to(device)
     model.eval()
@@ -182,6 +198,11 @@ def evaluate_classifier(model, X, y, n_classes, device, class_names, out_path_cm
     out_path_cm.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(str(out_path_cm), dpi=300, bbox_inches="tight")
     plt.close(fig)
+
+    # Plain numeric grid, no color — matches Sharma et al. Table IV/V style.
+    # Additive only: the colored figure above is unchanged.
+    plain_path = out_path_cm.with_name(out_path_cm.stem + "_plain.txt")
+    write_plain_confusion_table(cm, class_names, plain_path, title)
 
     return {
         "accuracy": float(acc),

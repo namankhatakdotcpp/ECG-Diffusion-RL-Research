@@ -23,6 +23,7 @@ heartpy>=1.2                # HRV analysis
 
 # Time-series metrics
 tslearn>=0.6                # DTW distance, time-series k-means
+pywavelets>=1.4              # wavelet subband decomposition (mentor_eval/subband_features.py)
 
 # Visualisation
 matplotlib>=3.7
