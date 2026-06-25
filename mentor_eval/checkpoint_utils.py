@@ -65,7 +65,12 @@ def load_checkpoint(ckpt_path: Path, cfg) -> Optional[LoadedCheckpoint]:
 
 def generate_for_class(
     loaded: LoadedCheckpoint, class_name: str, n_samples: int, cfg, seed: int,
-    stats: Optional[dict] = None, use_ema: bool = True,
+    stats: Optional[dict] = None, use_ema: bool = False,
+    # Defaulted to False: diagnosed 2026-06-25 that EMA shadow weights are
+    # severely under-trained relative to live model weights (unproj.weight
+    # std 0.0043 vs 0.024 live) — sampling with EMA produced pure noise
+    # across all classes/leads. Revisit if EMA tracking/update frequency
+    # is fixed in training.
 ):
     """Generate n_samples ECGs for class_name using the model's EMA weights.
 
