@@ -42,6 +42,7 @@ from mentor_eval.class_mapping import (
     load_ptbxl_database, filter_to_mentor_classes,
 )
 from mentor_eval.checkpoint_utils import load_checkpoint, generate_for_class
+from utils.backup import snapshot_before_write
 from mentor_eval.classification_validation import (
     MentorClassifier, TRAIN_FOLDS, VAL_FOLDS, TEST_FOLDS,
 )
@@ -165,7 +166,7 @@ def _plot_embedding(coords_2d, labels, sources, class_names, method_name, out_pa
 
 
 def run(cfg, log) -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    snapshot_before_write(OUT_DIR)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     set_seed(42)
 

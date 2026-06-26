@@ -31,6 +31,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from utils import load_config, get_logger
+from utils.backup import snapshot_before_write
 
 PUBSTYLE = {
     "font.size": 11, "font.family": "sans-serif",
@@ -95,7 +96,7 @@ def main() -> None:
 
     log_path = Path(args.log_path) if args.log_path else Path(cfg.paths.logs) / "diffusion_training_log.csv"
     out_dir  = Path(args.out_dir) if args.out_dir else Path(cfg.paths.outputs.results).parent / "mentor_review" / "loss_curves"
-
+    snapshot_before_write(out_dir)
     run(log_path, out_dir, log)
     print(f"✓ Loss curve written to {out_dir}")
 

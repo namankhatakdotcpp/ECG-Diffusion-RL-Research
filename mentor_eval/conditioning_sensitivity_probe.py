@@ -33,6 +33,7 @@ import pandas as pd
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import time
 from utils import load_config, get_logger
 from mentor_eval.checkpoint_utils import load_checkpoint
 
@@ -102,6 +103,9 @@ def main() -> None:
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     csv_path = OUT_DIR / "sensitivity_probe.csv"
+    if csv_path.exists():
+        old_ts = time.strftime("%Y%m%d_%H%M%S", time.localtime(csv_path.stat().st_mtime))
+        csv_path.rename(OUT_DIR / f"sensitivity_probe_{old_ts}.csv")
     pd.DataFrame(results).to_csv(csv_path, index=False)
     log.info(f"Saved → {csv_path}")
 

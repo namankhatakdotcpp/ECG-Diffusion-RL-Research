@@ -20,6 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from utils import load_config, get_logger
+from utils.backup import snapshot_before_write
 
 STAGES = [
     ("1. Dataset audit",                  ["-m", "mentor_eval.dataset_audit"]),
@@ -36,6 +37,7 @@ STAGES = [
 def main() -> None:
     cfg = load_config()
     log = get_logger("run_all", cfg=cfg)
+    snapshot_before_write(Path(cfg.paths.outputs.results).parent / "mentor_review")
     root = Path(__file__).resolve().parents[1]
 
     results = []

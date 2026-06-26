@@ -29,6 +29,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from utils import load_config, get_logger
+from utils.backup import snapshot_before_write
 from mentor_eval.class_mapping import parse_scp_codes
 
 
@@ -124,7 +125,7 @@ def main() -> None:
 
     ptbxl_dir = Path(args.ptbxl_dir) if args.ptbxl_dir else Path(cfg.paths.data.ptbxl)
     out_dir   = Path(args.out_dir) if args.out_dir else Path(cfg.paths.outputs.results).parent / "mentor_review" / "dataset_audit"
-
+    snapshot_before_write(out_dir)
     audit_dataset(ptbxl_dir, out_dir, log)
     print(f"✓ Audit complete. Report → {out_dir / 'audit_report.csv'}")
 

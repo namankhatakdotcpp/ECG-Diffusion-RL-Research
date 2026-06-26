@@ -43,6 +43,7 @@ from mentor_eval.class_mapping import (
     MENTOR_CLASSES, load_ptbxl_database, filter_to_mentor_classes,
 )
 from mentor_eval.checkpoint_utils import load_checkpoint, generate_for_class
+from utils.backup import snapshot_before_write
 from mentor_eval.classification_validation import (
     MentorClassifier, _ConvBlock1D,
     TRAIN_FOLDS, VAL_FOLDS,
@@ -107,7 +108,7 @@ def _train_classifier(X_train, y_train, X_val, y_val, device, log, n_classes=4, 
 
 
 def run(cfg, log) -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    snapshot_before_write(OUT_DIR)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     set_seed(42)
 

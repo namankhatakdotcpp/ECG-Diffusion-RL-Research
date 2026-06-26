@@ -25,6 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from utils import load_config, get_logger
+from utils.backup import snapshot_before_write
 
 OUT_DIR = Path("outputs/conditioning_analysis")
 
@@ -86,7 +87,7 @@ def _write_summary() -> None:
 def main() -> None:
     cfg = load_config()
     log = get_logger("run_disease_conditioning_analysis", cfg=cfg)
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    snapshot_before_write(OUT_DIR)
     root = Path(__file__).resolve().parents[1]
 
     results = []

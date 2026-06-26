@@ -33,6 +33,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from utils import load_config, get_logger, set_seed
+from utils.backup import snapshot_before_write
 from mentor_eval.checkpoint_utils import load_checkpoint, generate_for_class
 
 PUBSTYLE = {
@@ -135,6 +136,7 @@ def main() -> None:
 
     models_dir = Path(args.models_dir) if args.models_dir else Path(cfg.paths.outputs.models)
     out_dir     = Path(args.out_dir) if args.out_dir else Path(cfg.paths.outputs.results).parent / "mentor_review" / "training_progression"
+    snapshot_before_write(out_dir)
     lead_names  = list(cfg.ptbxl.lead_names)
 
     run(models_dir, out_dir, args.class_name, args.lead, lead_names, cfg, args.seed, log)

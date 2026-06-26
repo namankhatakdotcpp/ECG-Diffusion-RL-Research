@@ -31,6 +31,7 @@ import wfdb
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from utils import load_config, get_logger, set_seed
+from utils.backup import snapshot_before_write
 from mentor_eval.class_mapping import (
     MENTOR_CLASSES, load_ptbxl_database, filter_to_mentor_classes,
 )
@@ -168,6 +169,7 @@ def main() -> None:
 
     ptbxl_dir = Path(cfg.paths.data.ptbxl)
     out_dir = Path(args.out_dir) if args.out_dir else subband_output_dir(cfg)
+    snapshot_before_write(out_dir)
     lead_names = list(cfg.ptbxl.lead_names)
 
     run(ptbxl_dir, out_dir, args.lead, lead_names, args.seed, log)

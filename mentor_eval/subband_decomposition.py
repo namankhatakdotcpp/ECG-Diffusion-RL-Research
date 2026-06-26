@@ -43,6 +43,7 @@ from mentor_eval.class_mapping import (
     MENTOR_CLASSES, MENTOR_TO_TRAINED_CLASS, load_ptbxl_database, filter_to_mentor_classes,
 )
 from mentor_eval.checkpoint_utils import load_checkpoint, generate_for_class
+from utils.backup import snapshot_before_write
 from mentor_eval.subband_features import (
     SUBBAND_NAMES, SUBBAND_CLINICAL_LABEL, subband_frequency_ranges, subband_energy_per_lead,
     subband_output_dir,
@@ -213,8 +214,8 @@ def main() -> None:
     ptbxl_dir = Path(cfg.paths.data.ptbxl)
     ckpt_path = Path(args.ckpt) if args.ckpt else Path(cfg.paths.outputs.models) / "diffusion_best.pt"
     out_dir = Path(args.out_dir) if args.out_dir else subband_output_dir(cfg)
+    snapshot_before_write(out_dir)
     lead_names = list(cfg.ptbxl.lead_names)
-    out_dir.mkdir(parents=True, exist_ok=True)
 
     log.info("Item 1: building subband energy table (real data) …")
     table = build_energy_table(ptbxl_dir, lead_names, args.n_per_class, args.seed, log)

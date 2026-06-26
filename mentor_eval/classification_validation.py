@@ -51,6 +51,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from utils import load_config, get_logger, set_seed
+from utils.backup import snapshot_before_write
 from mentor_eval.class_mapping import (
     MENTOR_CLASSES, MENTOR_TO_TRAINED_CLASS, load_ptbxl_database, filter_to_mentor_classes,
 )
@@ -345,7 +346,7 @@ def main() -> None:
 
     ckpt_path = Path(args.ckpt) if args.ckpt else Path(cfg.paths.outputs.models) / "diffusion_best.pt"
     out_dir   = Path(args.out_dir) if args.out_dir else Path(cfg.paths.outputs.results).parent / "mentor_review" / "classification_validation"
-
+    snapshot_before_write(out_dir)
     run(ckpt_path, out_dir, cfg, args.seed, log)
     print(f"✓ Outputs (whatever stage(s) completed) written to {out_dir}")
 

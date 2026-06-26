@@ -45,6 +45,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from utils import load_config, get_logger
+from utils.backup import snapshot_before_write
 
 OUT_DIR = Path("outputs/conditioning_analysis")
 
@@ -91,7 +92,7 @@ def main() -> None:
     cfg = load_config()
     log = get_logger("cfg_sweep", cfg=cfg)
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    snapshot_before_write(OUT_DIR)
     out_path = OUT_DIR / "cfg_sweep_result.txt"
     out_path.write_text(_RESULT_TEXT)
     log.info(f"CFG sweep result written → {out_path}")

@@ -54,6 +54,7 @@ from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
 from utils import load_config, get_logger, set_seed
+from utils.backup import snapshot_before_write
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Noise schedule helpers
@@ -953,6 +954,7 @@ def main() -> None:
     cfg = load_config()
     log = get_logger("step04_transformer_diffusion", cfg=cfg)
     set_seed(cfg.seeds[0])
+    snapshot_before_write(Path(cfg.paths.outputs.models))
 
     best_val_loss = train(cfg, log)
     _generate_final_samples(cfg, log)

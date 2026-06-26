@@ -27,6 +27,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from utils import load_config, get_logger
+from utils.backup import snapshot_before_write
+from mentor_eval.subband_features import subband_output_dir
 
 STAGES = [
     ("1+2. Subband energy table + box plots", ["-m", "mentor_eval.subband_decomposition"]),
@@ -38,6 +40,7 @@ STAGES = [
 def main() -> None:
     cfg = load_config()
     log = get_logger("run_subband_analysis", cfg=cfg)
+    snapshot_before_write(subband_output_dir(cfg))
     root = Path(__file__).resolve().parents[1]
 
     results = []
