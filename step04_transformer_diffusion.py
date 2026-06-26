@@ -138,6 +138,11 @@ class PatchEmbed1D(nn.Module):
         return tokens.reshape(B, self.n_leads * self.n_patches, -1)
 
 
+def modulate(x: Tensor, shift: Tensor, scale: Tensor) -> Tensor:
+    """FiLM-style feature modulation: scale and shift every token."""
+    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+
+
 class TransformerBlock(nn.Module):
     """
     Pre-norm Transformer block (BERT/GPT-style).
@@ -161,12 +166,14 @@ class TransformerBlock(nn.Module):
             nn.Linear(d_ff, model_dim),
             nn.Dropout(dropout),
         )
+        self.adaLN = nn.Linear(model_dim, 4 * model_dim)
 
-    def forward(self, x: Tensor) -> Tensor:
-        h = self.norm1(x)
+    def forward(self, x: Tensor, cond: Tensor) -> Tensor:
+        shift1, scale1, shift2, scale2 = self.adaLN(cond).chunk(4, dim=-1)
+        h = modulate(self.norm1(x), shift1, scale1)
         h, _ = self.attn(h, h, h)
         x = x + h
-        x = x + self.ff(self.norm2(x))
+        x = x + self.ff(modulate(self.norm2(x), shift2, scale2))
         return x
 
 
@@ -239,6 +246,11 @@ class ECGTransformerDiffusion(nn.Module):
         # Zero-init unproj so predictions start near zero
         nn.init.zeros_(self.unproj.weight)
         nn.init.zeros_(self.unproj.bias)
+        # Zero-init adaLN in every TransformerBlock — must run AFTER the general
+        # nn.Linear loop above, which would otherwise overwrite these with xavier_uniform_
+        for block in self.blocks:
+            nn.init.zeros_(block.adaLN.weight)
+            nn.init.zeros_(block.adaLN.bias)
 
     def forward(self, x_t: Tensor, t: Tensor, class_label: Tensor) -> Tensor:
         B = x_t.shape[0]
@@ -255,9 +267,9 @@ class ECGTransformerDiffusion(nn.Module):
         # Broadcast condition to every token
         tokens = tokens + cond.unsqueeze(1)  # (B, 600, model_dim)
 
-        # Transformer blocks
+        # Transformer blocks — cond is passed per-block for FiLM modulation
         for block in self.blocks:
-            tokens = block(tokens)
+            tokens = block(tokens, cond)
         tokens = self.final_norm(tokens)
 
         # Unpatchify: (B, 600, model_dim) → (B, 12, 1000)
