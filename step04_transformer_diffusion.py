@@ -231,7 +231,10 @@ class ECGTransformerDiffusion(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
             elif isinstance(m, nn.Embedding):
-                nn.init.normal_(m.weight, std=0.02)
+                if m is self.class_emb:
+                    nn.init.normal_(m.weight, std=1.0)  # was 0.02 — see commit message
+                else:
+                    nn.init.normal_(m.weight, std=0.02)
         # Zero-init unproj so predictions start near zero
         nn.init.zeros_(self.unproj.weight)
         nn.init.zeros_(self.unproj.bias)
