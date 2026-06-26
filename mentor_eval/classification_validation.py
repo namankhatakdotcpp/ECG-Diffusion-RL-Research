@@ -43,7 +43,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import wfdb
 from sklearn.metrics import (
-    accuracy_score, confusion_matrix, roc_curve, auc, f1_score,
+    accuracy_score, balanced_accuracy_score, confusion_matrix,
+    roc_curve, auc, f1_score, precision_score, recall_score,
 )
 from sklearn.preprocessing import label_binarize
 from torch.utils.data import DataLoader, TensorDataset
@@ -160,6 +161,14 @@ def write_plain_confusion_table(cm: np.ndarray, class_names: list[str], out_path
     out_path.write_text("\n".join(lines) + "\n")
 
 
+def _print_per_class_table(class_names, precision, recall, f1, title: str) -> None:
+    print(f"\n### Per-class metrics — {title}")
+    print(f"| {'Class':<10} | {'Precision':>10} | {'Recall':>10} | {'F1':>10} |")
+    print(f"|{'-'*12}|{'-'*12}|{'-'*12}|{'-'*12}|")
+    for i, cls in enumerate(class_names):
+        print(f"| {cls:<10} | {precision[i]:>10.4f} | {recall[i]:>10.4f} | {f1[i]:>10.4f} |")
+
+
 def evaluate_classifier(model, X, y, n_classes, device, class_names, out_path_cm: Path, title: str):
     Xt = torch.from_numpy(X.transpose(0, 2, 1)).float().to(device)
     model.eval()
@@ -204,13 +213,27 @@ def evaluate_classifier(model, X, y, n_classes, device, class_names, out_path_cm
     plain_path = out_path_cm.with_name(out_path_cm.stem + "_plain.txt")
     write_plain_confusion_table(cm, class_names, plain_path, title)
 
-    return {
-        "accuracy": float(acc),
-        "macro_f1": float(f1_score(y, pred, average="macro", zero_division=0)),
-        "macro_auc": macro_auc,
-        "per_class_auc": {k: v[2] for k, v in roc_data.items()},
-        "confusion_matrix": cm.tolist(),
-    }, roc_data
+    per_class_precision = precision_score(y, pred, average=None, zero_division=0, labels=list(range(n_classes)))
+    per_class_recall    = recall_score(   y, pred, average=None, zero_division=0, labels=list(range(n_classes)))
+    per_class_f1        = f1_score(       y, pred, average=None, zero_division=0, labels=list(range(n_classes)))
+
+    metrics = {
+        "accuracy":          float(acc),
+        "macro_f1":          float(f1_score(y, pred, average="macro",     zero_division=0)),
+        "weighted_f1":       float(f1_score(y, pred, average="weighted",  zero_division=0)),
+        "balanced_accuracy": float(balanced_accuracy_score(y, pred)),
+        "macro_auc":         macro_auc,
+        "per_class_auc":     {k: v[2] for k, v in roc_data.items()},
+        "per_class_precision": {class_names[i]: float(per_class_precision[i]) for i in range(n_classes)},
+        "per_class_recall":    {class_names[i]: float(per_class_recall[i])    for i in range(n_classes)},
+        "per_class_f1":        {class_names[i]: float(per_class_f1[i])        for i in range(n_classes)},
+        "confusion_matrix":  cm.tolist(),
+    }
+
+    # Markdown table printed at end of run
+    _print_per_class_table(class_names, per_class_precision, per_class_recall, per_class_f1, title)
+
+    return metrics, roc_data
 
 
 def plot_roc_curves(roc_data: dict, out_path: Path, title: str):

@@ -42,3 +42,4 @@ omegaconf>=2.3
 
 # Utilities
 tqdm>=4.65
+umap-learn>=0.5             # UMAP dimensionality reduction (mentor_eval/embedding_visualization.py)
