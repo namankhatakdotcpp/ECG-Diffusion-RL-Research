@@ -166,7 +166,7 @@ class TransformerBlock(nn.Module):
             nn.Linear(d_ff, model_dim),
             nn.Dropout(dropout),
         )
-        self.adaLN = nn.Linear(model_dim, 4 * model_dim)
+        self.adaLN = nn.Linear(2 * model_dim, 4 * model_dim)
 
     def forward(self, x: Tensor, cond: Tensor) -> Tensor:
         shift1, scale1, shift2, scale2 = self.adaLN(cond).chunk(4, dim=-1)
@@ -261,15 +261,16 @@ class ECGTransformerDiffusion(nn.Module):
         # Build condition: (B, model_dim)
         t_emb = _sinusoidal_time_emb(t, self._dim)
         t_emb = self.time_mlp(t_emb)
-        c_emb = self.class_emb(class_label)
-        cond  = t_emb + c_emb
+        c_emb     = self.class_emb(class_label)
+        cond      = t_emb + c_emb                          # (B, model_dim)  — token injection only
+        cond_film = torch.cat([t_emb, c_emb], dim=-1)     # (B, 2*model_dim) — adaLN input only
 
-        # Broadcast condition to every token
+        # Broadcast summed condition to every token (unchanged from prior PR)
         tokens = tokens + cond.unsqueeze(1)  # (B, 600, model_dim)
 
-        # Transformer blocks — cond is passed per-block for FiLM modulation
+        # Transformer blocks — cond_film (decoupled concat) feeds adaLN; cond is NOT used here
         for block in self.blocks:
-            tokens = block(tokens, cond)
+            tokens = block(tokens, cond_film)
         tokens = self.final_norm(tokens)
 
         # Unpatchify: (B, 600, model_dim) → (B, 12, 1000)
@@ -748,7 +749,23 @@ def train(cfg, log) -> float:
     ema       = EMA(model, decay=float(d.ema_decay))
 
     # ── Optimiser and scheduler ───────────────────────────────────────────────
-    optimiser = torch.optim.AdamW(model.parameters(), lr=float(d.lr), weight_decay=float(d.weight_decay))
+    _lr = float(d.lr)
+    _wd = float(d.weight_decay)
+    _class_emb_params = {n for n, _ in model.named_parameters() if n == "class_emb.weight"}
+    assert _class_emb_params == {"class_emb.weight"}, f"Unexpected class_emb param names: {_class_emb_params}"
+    _decay_params   = [p for n, p in model.named_parameters() if n != "class_emb.weight"]
+    _nodecay_params = [p for n, p in model.named_parameters() if n == "class_emb.weight"]
+    assert len(_nodecay_params) == 1 and _nodecay_params[0].numel() == model.class_emb.weight.numel(), \
+        f"class_emb group mismatch: got {len(_nodecay_params)} tensors"
+    log.info(f"Optimizer groups: decay({len(_decay_params)} params, wd={_wd}), "
+             f"no-decay({len(_nodecay_params)} params [{model.class_emb.weight.shape}], wd=0.0)")
+    optimiser = torch.optim.AdamW(
+        [
+            {"params": _decay_params,   "weight_decay": _wd},
+            {"params": _nodecay_params, "weight_decay": 0.0},
+        ],
+        lr=_lr,
+    )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=int(d.n_epochs))
     use_amp   = (device == "cuda")
     scaler    = torch.cuda.amp.GradScaler(enabled=use_amp)
