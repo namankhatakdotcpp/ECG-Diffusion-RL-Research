@@ -66,16 +66,19 @@ def load_checkpoint(ckpt_path: Path, cfg) -> Optional[LoadedCheckpoint]:
 def generate_for_class(
     loaded: LoadedCheckpoint, class_name: str, n_samples: int, cfg, seed: int,
     stats: Optional[dict] = None, use_ema: bool = False,
-    # Defaulted to False: diagnosed 2026-06-25 that EMA shadow weights are
+    guidance_scale: Optional[float] = None,
+    # use_ema defaulted to False: diagnosed 2026-06-25 that EMA shadow weights are
     # severely under-trained relative to live model weights (unproj.weight
     # std 0.0043 vs 0.024 live) — sampling with EMA produced pure noise
     # across all classes/leads. Revisit if EMA tracking/update frequency
     # is fixed in training.
 ):
-    """Generate n_samples ECGs for class_name using the model's EMA weights.
+    """Generate n_samples ECGs for class_name using the model's live (or EMA) weights.
 
     Returns (samples, error_message). If class_name isn't in the trained
     model's class_names, returns (None, "<reason>") instead of guessing.
+
+    guidance_scale: CFG scale (e.g. 3.0). None = original single-pass behavior.
     """
     if class_name not in loaded.class_names:
         return None, (
@@ -84,15 +87,14 @@ def generate_for_class(
         )
     class_idx = loaded.class_names.index(class_name)
 
+    _kwargs = dict(
+        model=loaded.model, diffusion=loaded.diffusion, class_label=class_idx,
+        n_samples=n_samples, device=loaded.device, cfg=cfg, seed=seed, stats=stats,
+        guidance_scale=guidance_scale,
+    )
     if use_ema:
         with loaded.ema.ema_scope(loaded.model):
-            samples = generate_ecg(
-                model=loaded.model, diffusion=loaded.diffusion, class_label=class_idx,
-                n_samples=n_samples, device=loaded.device, cfg=cfg, seed=seed, stats=stats,
-            )
+            samples = generate_ecg(**_kwargs)
     else:
-        samples = generate_ecg(
-            model=loaded.model, diffusion=loaded.diffusion, class_label=class_idx,
-            n_samples=n_samples, device=loaded.device, cfg=cfg, seed=seed, stats=stats,
-        )
+        samples = generate_ecg(**_kwargs)
     return samples, None

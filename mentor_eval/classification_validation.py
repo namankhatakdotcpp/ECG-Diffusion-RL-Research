@@ -250,7 +250,7 @@ def plot_roc_curves(roc_data: dict, out_path: Path, title: str):
     plt.close(fig)
 
 
-def run(ckpt_path: Path, out_dir: Path, cfg, seed: int, log) -> None:
+def run(ckpt_path: Path, out_dir: Path, cfg, seed: int, log, guidance_scale=None) -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     ptbxl_dir = Path(cfg.paths.data.ptbxl)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -304,7 +304,8 @@ def run(ckpt_path: Path, out_dir: Path, cfg, seed: int, log) -> None:
         if trained_cls is None:
             skipped.append(cls)
             continue
-        samples, err = generate_for_class(loaded, trained_cls, n_samples=100, cfg=cfg, seed=seed, stats=prep_stats)
+        samples, err = generate_for_class(loaded, trained_cls, n_samples=100, cfg=cfg, seed=seed, stats=prep_stats,
+                                          guidance_scale=guidance_scale)
         if err:
             skipped.append(cls)
             continue
@@ -338,6 +339,8 @@ def main() -> None:
     parser.add_argument("--ckpt", type=str, default=None)
     parser.add_argument("--out-dir", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--guidance-scale", type=float, default=None,
+                        help="CFG guidance scale. None = no CFG (default behavior).")
     args = parser.parse_args()
 
     cfg = load_config()
@@ -347,7 +350,7 @@ def main() -> None:
     ckpt_path = Path(args.ckpt) if args.ckpt else Path(cfg.paths.outputs.models) / "diffusion_best.pt"
     out_dir   = Path(args.out_dir) if args.out_dir else Path(cfg.paths.outputs.results).parent / "mentor_review" / "classification_validation"
     snapshot_before_write(out_dir)
-    run(ckpt_path, out_dir, cfg, args.seed, log)
+    run(ckpt_path, out_dir, cfg, args.seed, log, guidance_scale=args.guidance_scale)
     print(f"✓ Outputs (whatever stage(s) completed) written to {out_dir}")
 
 

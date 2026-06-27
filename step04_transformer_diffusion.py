@@ -208,8 +208,10 @@ class ECGTransformerDiffusion(nn.Module):
             nn.SiLU(),
             nn.Linear(model_dim * 4, model_dim),
         )
-        # Class: embedding table — size determined at runtime from class_names.json
-        self.class_emb = nn.Embedding(n_classes, model_dim)
+        # Class: embedding table — n_classes real classes + 1 null/unconditional token
+        # null_class_index = n_classes (the last row) is used during CFG training and sampling.
+        self.null_class_index = n_classes
+        self.class_emb = nn.Embedding(n_classes + 1, model_dim)
 
         # ── Transformer encoder (pre-norm BERT-style) ─────────────────────────
         self.blocks = nn.ModuleList([
@@ -339,17 +341,25 @@ class GaussianDiffusion:
     @torch.no_grad()
     def ddim_sample(
         self,
-        model:       nn.Module,
-        shape:       tuple,
-        class_label: Tensor,
-        n_steps:     int   = 50,
-        clip_x0:     float = 4.0,
+        model:          nn.Module,
+        shape:          tuple,
+        class_label:    Tensor,
+        n_steps:        int            = 50,
+        clip_x0:        float          = 4.0,
+        guidance_scale: Optional[float] = None,
     ) -> Tensor:
         """
         DDIM reverse process (η=0, fully deterministic).
 
         Uniformly-spaced timesteps from T-1 → 0. Clamps x̂_0 estimate to
         [-clip_x0, clip_x0] matching the preprocessing z-score clip range.
+
+        If guidance_scale is not None, runs CFG: a single batched forward
+        pass with [real_labels, null_labels] concatenated along dim 0 produces
+        eps_cond and eps_uncond in one call, then combines them as:
+            eps = eps_uncond + guidance_scale * (eps_cond - eps_uncond)
+        If guidance_scale is None, runs the original single-pass behavior —
+        zero change for callers that don't pass it.
         """
         device = class_label.device
         B      = shape[0]
@@ -359,7 +369,20 @@ class GaussianDiffusion:
 
         for i, t_curr in enumerate(ts):
             t_batch = t_curr.expand(B)
-            eps     = model(x, t_batch, class_label)
+
+            if guidance_scale is not None:
+                # Batched two-pass CFG: concat real + null along batch dim,
+                # single forward call, then split. Avoids two sequential calls
+                # and halves Python overhead vs. two model() invocations.
+                null_label = torch.full_like(class_label, model.null_class_index)
+                x_double   = torch.cat([x, x], dim=0)
+                t_double   = torch.cat([t_batch, t_batch], dim=0)
+                lbl_double = torch.cat([class_label, null_label], dim=0)
+                eps_double = model(x_double, t_double, lbl_double)
+                eps_cond, eps_uncond = eps_double[:B], eps_double[B:]
+                eps = eps_uncond + guidance_scale * (eps_cond - eps_uncond)
+            else:
+                eps = model(x, t_batch, class_label)
 
             ab_t = self.alpha_bar[t_curr]
 
@@ -504,29 +527,31 @@ def _make_weighted_sampler(labels: np.ndarray) -> WeightedRandomSampler:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def generate_ecg(
-    model:       nn.Module,
-    diffusion:   GaussianDiffusion,
-    class_label: int,
-    n_samples:   int  = 10,
-    device:      str  = "cuda",
+    model:          nn.Module,
+    diffusion:      GaussianDiffusion,
+    class_label:    int,
+    n_samples:      int            = 10,
+    device:         str            = "cuda",
     cfg=None,
-    seed:        int  = 42,
-    stats:       Optional[dict] = None,
+    seed:           int            = 42,
+    stats:          Optional[dict] = None,
+    guidance_scale: Optional[float] = None,
 ) -> np.ndarray:
     """
     Generate n_samples ECGs for the given class label using DDIM sampling.
 
     Args:
-        model:        trained ECGTransformerDiffusion (will be set to eval mode)
-        diffusion:    GaussianDiffusion with schedule tensors already on device
-        class_label:  integer class index matching class_names.json ordering
-        n_samples:    number of ECGs to generate
-        device:       "cuda" or "cpu"
-        cfg:          OmegaConf config (for signal shape / ddim_steps)
-        seed:         RNG seed for reproducibility
-        stats:        preprocessing_stats dict {'mean': [...], 'std': [...]}
-                      for denormalisation to original mV scale; if None,
-                      returns output in z-score space (clipped to ±4)
+        model:          trained ECGTransformerDiffusion (will be set to eval mode)
+        diffusion:      GaussianDiffusion with schedule tensors already on device
+        class_label:    integer class index matching class_names.json ordering
+        n_samples:      number of ECGs to generate
+        device:         "cuda" or "cpu"
+        cfg:            OmegaConf config (for signal shape / ddim_steps)
+        seed:           RNG seed for reproducibility
+        stats:          preprocessing_stats dict {'mean': [...], 'std': [...]}
+                        for denormalisation to original mV scale; if None,
+                        returns output in z-score space (clipped to ±4)
+        guidance_scale: CFG scale (e.g. 3.0). None = old single-pass behavior.
 
     Returns:
         np.ndarray of shape (n_samples, 1000, 12)
@@ -545,6 +570,7 @@ def generate_ecg(
             shape=(n_samples, n_leads, sig_len),
             class_label=label_t,
             n_steps=ddim_steps,
+            guidance_scale=guidance_scale,
         )  # (n_samples, 12, 1000)
 
     # Transpose to (N, 1000, 12) for downstream consistency
@@ -748,15 +774,23 @@ def train(cfg, log) -> float:
     diffusion = GaussianDiffusion(T=int(d.T), beta_schedule=str(d.beta_schedule), device=device)
     ema       = EMA(model, decay=float(d.ema_decay))
 
+    # ── CFG training hyperparameters ──────────────────────────────────────────
+    p_uncond = float(getattr(d, "p_uncond", 0.10))
+    log.info(f"CFG training: p_uncond={p_uncond}")
+
     # ── Optimiser and scheduler ───────────────────────────────────────────────
     _lr = float(d.lr)
     _wd = float(d.weight_decay)
+    _expected_emb_shape = (n_classes + 1, int(d.model_dim))  # (7, 256) after null-class resize
     _class_emb_params = {n for n, _ in model.named_parameters() if n == "class_emb.weight"}
     assert _class_emb_params == {"class_emb.weight"}, f"Unexpected class_emb param names: {_class_emb_params}"
     _decay_params   = [p for n, p in model.named_parameters() if n != "class_emb.weight"]
     _nodecay_params = [p for n, p in model.named_parameters() if n == "class_emb.weight"]
-    assert len(_nodecay_params) == 1 and _nodecay_params[0].numel() == model.class_emb.weight.numel(), \
-        f"class_emb group mismatch: got {len(_nodecay_params)} tensors"
+    assert (len(_nodecay_params) == 1
+            and tuple(_nodecay_params[0].shape) == _expected_emb_shape), (
+        f"class_emb shape mismatch: expected {_expected_emb_shape}, "
+        f"got {tuple(_nodecay_params[0].shape) if _nodecay_params else 'no tensor'}"
+    )
     log.info(f"Optimizer groups: decay({len(_decay_params)} params, wd={_wd}), "
              f"no-decay({len(_nodecay_params)} params [{model.class_emb.weight.shape}], wd=0.0)")
     optimiser = torch.optim.AdamW(
@@ -796,6 +830,14 @@ def train(cfg, log) -> float:
             batch_cls = batch_cls.to(device)   # (B,)
             B         = batch_x.shape[0]
 
+            # Per-sample CFG dropout: each sample independently replaced with
+            # null_class_index with probability p_uncond. Per-sample (not per-batch)
+            # so the model sees both conditional and unconditional in every batch.
+            if p_uncond > 0.0:
+                null_mask = torch.bernoulli(torch.full((B,), p_uncond, device=device)).bool()
+                batch_cls = batch_cls.clone()
+                batch_cls[null_mask] = model.null_class_index
+
             t_diff = torch.randint(0, int(d.T), (B,), device=device)
             noise  = torch.randn_like(batch_x)
             x_t, _ = diffusion.q_sample(batch_x, t_diff, noise)
@@ -833,6 +875,7 @@ def train(cfg, log) -> float:
             with ema.ema_scope(model), torch.no_grad():
                 for batch_x, batch_cls in val_loader:
                     batch_x, batch_cls = batch_x.to(device), batch_cls.to(device)
+                    # Validation always uses real labels — no CFG dropout here (intentional).
                     B      = batch_x.shape[0]
                     t_diff = torch.randint(0, int(d.T), (B,), device=device)
                     noise  = torch.randn_like(batch_x)

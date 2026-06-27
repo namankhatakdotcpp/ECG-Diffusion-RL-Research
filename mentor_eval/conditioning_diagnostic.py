@@ -107,7 +107,7 @@ def _train_classifier(X_train, y_train, X_val, y_val, device, log, n_classes=4, 
     return model
 
 
-def run(cfg, log) -> None:
+def run(cfg, log, guidance_scale=None) -> None:
     snapshot_before_write(OUT_DIR)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     set_seed(42)
@@ -162,6 +162,7 @@ def run(cfg, log) -> None:
         log.info(f"Generating {N_GEN} samples for diffusion class '{dcls}' …")
         samples, err = generate_for_class(
             loaded, dcls, n_samples=N_GEN, cfg=cfg, seed=100 + ri, stats=prep_stats,
+            guidance_scale=guidance_scale,
         )
         if err:
             log.warning(f"  Skipped '{dcls}': {err}")
@@ -225,9 +226,14 @@ def run(cfg, log) -> None:
 
 
 def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--guidance-scale", type=float, default=None,
+                        help="CFG guidance scale. None = no CFG (default behavior).")
+    args = parser.parse_args()
     cfg = load_config()
     log = get_logger("conditioning_diagnostic", cfg=cfg)
-    run(cfg, log)
+    run(cfg, log, guidance_scale=args.guidance_scale)
 
 
 if __name__ == "__main__":

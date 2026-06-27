@@ -97,6 +97,9 @@ diffusion:
   ema_decay: 0.9999
   grad_clip: 1.0
   save_every: 25              # checkpoint + validation every N epochs
+  # CFG (classifier-free guidance)
+  p_uncond: 0.10              # per-sample null-class dropout probability during training
+  guidance_scale: 3.0         # CFG scale at sampling time (used by cfg_sweep.py; not applied by default)
   # Inference
   ddim_steps: 50              # DDIM sampling steps (η=0, deterministic)
   sample_timesteps: 50        # alias kept for backward-compat
