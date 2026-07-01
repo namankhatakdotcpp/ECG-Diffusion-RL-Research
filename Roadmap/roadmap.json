@@ -1,0 +1,74 @@
+{
+  "project": "ECG Diffusion Conditioning Research Roadmap",
+  "owner": "Naman Khatak",
+  "created": "2026-07-02",
+  "current_stage": "Stage_1_Diagnosis",
+  "rule": "Do not begin a stage until the previous stage's Decisions.md justifies proceeding.",
+  "stages": [
+    {
+      "id": "Stage_1_Diagnosis",
+      "goal": "Determine WHY class conditioning fails before touching architecture.",
+      "status": "in_progress",
+      "experiments": [
+        {
+          "id": 1,
+          "name": "Baseline Reproduction",
+          "status": "code_ready_awaiting_gpu_server",
+          "report": "baseline_report.md"
+        },
+        {
+          "id": 2,
+          "name": "Dataset Scaling (PTB-XL only, no new data)",
+          "status": "code_ready_awaiting_gpu_server",
+          "report": "dataset_scaling_report.md"
+        },
+        {
+          "id": 3,
+          "name": "Directional Conditioning Analysis",
+          "status": "code_ready_awaiting_gpu_server",
+          "report": "directional_conditioning_report.md"
+        },
+        {
+          "id": 4,
+          "name": "MentorClassifier Verification (AFIB reject-class test)",
+          "status": "complete",
+          "report": "classifier_validation_report.md"
+        },
+        {
+          "id": 5,
+          "name": "Decision Report",
+          "status": "blocked_on_experiments_1_2_3",
+          "report": "Stage1_Final_Report.md"
+        }
+      ]
+    },
+    {
+      "id": "Stage_2_Training",
+      "goal": "TBD pending Stage 1 decision",
+      "status": "not_started"
+    },
+    {
+      "id": "Stage_3_Architecture",
+      "goal": "TBD pending Stage 1 decision",
+      "status": "not_started"
+    },
+    {
+      "id": "Stage_4_Optimization",
+      "goal": "TBD pending Stage 1 decision",
+      "status": "not_started"
+    },
+    {
+      "id": "Stage_5_Final_Model",
+      "goal": "TBD pending Stage 1 decision",
+      "status": "not_started"
+    }
+  ],
+  "decision_axes_for_stage_1": [
+    "Did more data improve conditioning?",
+    "Is architecture the bottleneck?",
+    "Is conditioning direction wrong?",
+    "Is MentorClassifier reliable?",
+    "Should Stage 2 proceed?",
+    "Should architecture changes wait?"
+  ]
+}
