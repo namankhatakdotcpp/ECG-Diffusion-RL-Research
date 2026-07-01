@@ -678,7 +678,13 @@ def _validation_plot(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _resolve_device(cfg) -> str:
-    return ("cuda" if torch.cuda.is_available() else "cpu") if str(cfg.device) == "auto" else str(cfg.device)
+    if str(cfg.device) != "auto":
+        return str(cfg.device)
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 def train(cfg, log) -> float:
