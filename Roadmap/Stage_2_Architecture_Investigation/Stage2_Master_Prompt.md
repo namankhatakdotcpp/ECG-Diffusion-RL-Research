@@ -239,11 +239,17 @@ verdict.
    plausibly have. A low Fisher ratio only means "not separable via a
    naive equal-weighting of all dimensions"; only linear_probe_accuracy()
    (which learns which dimensions matter) is the confirmatory test.
-     - min_class_count defaults exclude OTHER (n=2 project-wide) from
-       fisher_ratio automatically; linear_probe_accuracy requires >=10
-       per class by default -- OTHER will be excluded there too. This is
+     - min_class_count defaults exclude any class with too few samples IN
+       THE SPECIFIC PROBE BATCH from fisher_ratio (default: <5) and
+       linear_probe_accuracy (default: <10) automatically. This is
        correct behavior, not a bug: a variance or decision-boundary
-       estimate from 2 samples is not an estimate.
+       estimate from a handful of samples is not an estimate. CORRECTION:
+       an earlier version of this prompt claimed "OTHER (n=2 project-wide)"
+       as the motivating example -- that number is wrong; OTHER's real
+       project-wide count is train=254/val=29/test=30
+       (outputs/processed/class_counts.json), well above both thresholds.
+       The guard matters for small PER-BLOCK PROBE batches (e.g.
+       n_gen=20/class), not because OTHER itself is rare in the dataset.
      - linear_probe_accuracy auto-applies a PCA dimensionality guard when
        n_train < 5x the feature dimension, to avoid the interpolation
        regime where an unregularized linear classifier can badly overfit

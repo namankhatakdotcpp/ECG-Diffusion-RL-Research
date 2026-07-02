@@ -59,8 +59,23 @@ linear_probe_accuracy()
 
 Both functions exclude any class with fewer than `min_class_count` samples
 and report which classes were excluded, rather than silently including a
-class whose "variance" is really a single pairwise distance in disguise
-(the OTHER class problem: n=2 training sequences project-wide).
+class whose "variance" is really a single pairwise distance in disguise.
+
+Correction (2026-07-02): an earlier version of this docstring justified
+the guard with "the OTHER class problem: n=2 training sequences
+project-wide" — that number is wrong for this project. The real,
+verified count (outputs/processed/class_counts.json) is OTHER: train=254,
+val=29, test=30 (339 after the Finding-5 tie-break fix in
+utils/label_assignment.py) — well above both this module's default
+min_class_count thresholds (5 for fisher_ratio, 10 for linear_probe_accuracy).
+The guard is not defending against OTHER's *project-wide* total; it
+defends against any class ending up with very few samples inside a
+SMALL PER-BLOCK PROBE BATCH specifically — Tier 0 diagnostics intentionally
+work on small generated/pooled batches (e.g. n_gen=20/class), not the
+full split, so a project-wide-common class can still be underrepresented
+in one specific batch. Keep this distinction in mind when interpreting
+any "class excluded" warning this module emits: it describes the batch
+passed in, not the class's real prevalence in the dataset.
 """
 
 from __future__ import annotations
