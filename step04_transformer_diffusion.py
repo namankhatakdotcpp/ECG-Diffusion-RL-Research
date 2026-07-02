@@ -53,7 +53,7 @@ from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
-from utils import load_config, get_logger, set_seed
+from utils import load_config, get_logger, set_seed, assign_primary_class
 from utils.backup import snapshot_before_write
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -460,7 +460,13 @@ def _load_class_labels(
     """
     Map each record_id → integer class index using class_mapping.json.
 
-    Uses the highest-confidence SCP code that maps to a final class.
+    Uses the highest-confidence SCP code that maps to a final class. Ties
+    at the maximum confidence are broken by
+    utils.label_assignment.TIE_BREAK_PRIORITY (a clinical-severity
+    ordering, not dict-iteration order — see
+    Roadmap/Stage_0_Pipeline_Audit/Reports/Pipeline_Code_Audit.md
+    Finding 5), via the same shared function step03's _assign_primary()
+    uses, so the two selection rules cannot silently diverge.
     Records with no recognisable code are assigned to OTHER (if present) or dropped.
 
     Returns:
@@ -480,13 +486,9 @@ def _load_class_labels(
         if not scp:
             continue
 
-        best_cls, best_conf = None, -1.0
-        for code, conf in scp.items():
-            mapped = class_mapping.get(code.upper())
-            if mapped and mapped in name_to_idx and conf > best_conf:
-                best_cls, best_conf = mapped, conf
+        best_cls = assign_primary_class(scp, class_mapping)
 
-        if best_cls is None:
+        if best_cls is None or best_cls not in name_to_idx:
             if "OTHER" in name_to_idx:
                 best_cls = "OTHER"
             else:
