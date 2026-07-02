@@ -720,6 +720,21 @@ def train(cfg, log) -> float:
 
     n_classes = len(class_names)
 
+    # Hard, loud failure instead of silent mismatch: config.yaml's
+    # ptbxl.n_classes must agree with whatever class_names ended up being
+    # (real class_names.json, or the config.ptbxl.classes fallback above).
+    # A prior version of config.yaml declared 7 classes (incl. AFIB) while
+    # the real class_names.json had 6 -- that mismatch was only caught by
+    # a manual code audit, weeks later. This assertion turns any future
+    # recurrence into an immediate crash at the start of training instead.
+    # See Roadmap/Stage_0_Pipeline_Audit/Reports/Pipeline_Code_Audit.md Finding 6.
+    assert int(cfg.ptbxl.n_classes) == n_classes, (
+        f"config.yaml declares ptbxl.n_classes={int(cfg.ptbxl.n_classes)} but "
+        f"the class list actually in use has {n_classes} classes: {class_names}. "
+        f"These must agree -- fix config.yaml's ptbxl.classes/n_classes to match "
+        f"the real class_names.json (or vice versa if class_names.json is stale)."
+    )
+
     # ── Load signals ──────────────────────────────────────────────────────────
     for p in (
         processed_dir / "X_train.npy", processed_dir / "X_val.npy",

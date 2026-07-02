@@ -39,15 +39,21 @@ ptbxl:
     - V4
     - V5
     - V6
+  # Matches the real class_names.json step03 produces (AFIB has only 103
+  # records project-wide, below min_class_samples -- folded into OTHER,
+  # not a dedicated class). Only consulted as a fallback in step04/step02/
+  # step06 when class_names.json/class_mapping.json are missing -- see
+  # Roadmap/Stage_0_Pipeline_Audit/Reports/Pipeline_Code_Audit.md Finding 6.
+  # Previously listed 7 classes including AFIB and a stale n_classes: 7,
+  # silently disagreeing with the real 6-class taxonomy on disk.
   classes:
     - NORM
     - MI
     - STTC
     - CD
     - HYP
-    - AFIB
     - OTHER
-  n_classes: 7
+  n_classes: 6
   signal_length: 1000         # samples at 100 Hz → 10 seconds
   train_fold: [1, 2, 3, 4, 5, 6, 7, 8]
   val_fold: [9]
