@@ -689,6 +689,17 @@ def _resolve_device(cfg) -> str:
     return "cpu"
 
 
+# Checkpoint retention: periodic diffusion_ckpt_ep*.pt files were previously
+# never deleted, accumulating indefinitely (measured at 135.1MB each -- see
+# Roadmap/Stage_0_Pipeline_Audit/Reports/Pipeline_Code_Audit.md Finding 8).
+# Keep only the most recent N periodic checkpoints from THIS run, plus
+# diffusion_best.pt (which is never touched by this pruning). Applies
+# forward-only: only tracks/deletes checkpoints this run itself saved,
+# never globs and deletes pre-existing files in models_dir (those are
+# already relocated by snapshot_before_write before training starts).
+KEEP_LAST_N_CHECKPOINTS = 2
+
+
 def train(cfg, log) -> float:
     device = _resolve_device(cfg)
     log.info(f"Device: {device}")
@@ -840,6 +851,7 @@ def train(cfg, log) -> float:
     n_epochs      = int(d.n_epochs)
     save_every    = int(d.save_every)
     log_interval  = int(cfg.logging.log_interval)
+    saved_periodic_ckpts: list[Path] = []  # this run's own periodic checkpoints, oldest first
 
     log.info(f"Training: {n_epochs} epochs × {len(train_loader)} steps")
 
@@ -935,8 +947,18 @@ def train(cfg, log) -> float:
                 "class_names": class_names,
                 "n_classes":   n_classes,
             }
-            torch.save(ckpt, str(models_dir / f"diffusion_ckpt_ep{epoch:04d}.pt"))
+            ckpt_path = models_dir / f"diffusion_ckpt_ep{epoch:04d}.pt"
+            torch.save(ckpt, str(ckpt_path))
             log.info(f"Checkpoint → diffusion_ckpt_ep{epoch:04d}.pt")
+            saved_periodic_ckpts.append(ckpt_path)
+
+            # Retention: keep only the most recent KEEP_LAST_N_CHECKPOINTS
+            # periodic checkpoints from this run. diffusion_best.pt is
+            # untouched (saved separately below, never appended to this list).
+            while len(saved_periodic_ckpts) > KEEP_LAST_N_CHECKPOINTS:
+                stale_ckpt = saved_periodic_ckpts.pop(0)
+                stale_ckpt.unlink(missing_ok=True)
+                log.info(f"Pruned old checkpoint → {stale_ckpt.name} (keeping last {KEEP_LAST_N_CHECKPOINTS})")
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
