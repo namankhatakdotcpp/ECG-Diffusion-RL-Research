@@ -22,15 +22,30 @@ during Stage 1 benchmarking; see Roadmap/Stage_1_Diagnosis/Decisions.md.
 Usage (on the GPU server):
     python Roadmap/Stage_1_Diagnosis/Code/Experiment_1_Baseline/run_experiment_1_for_real.py
 
+    # Run this FIRST, before the real run above, on a shared/near-capacity
+    # GPU server: truncates to 3 epochs, caps batch size, saves a
+    # checkpoint every epoch (so one actually gets produced within 3
+    # epochs -- config's default save_every=25 would otherwise save
+    # nothing at all in a 3-epoch run), and skips the expensive
+    # classifier-retraining evaluation step (which trains its own
+    # MentorClassifier on ~14k real records for 30 epochs -- not
+    # something a crash-sanity-check needs to pay for). Confirms the
+    # pipeline executes end-to-end, a checkpoint saves correctly, and the
+    # ExperimentLogger ledger entry looks right, in minutes instead of
+    # however long the full 200-epoch run takes on unknown hardware.
+    python Roadmap/Stage_1_Diagnosis/Code/Experiment_1_Baseline/run_experiment_1_for_real.py --sanity-check
+
 Writes (in addition to everything step04/classification_validation
 already write):
     Roadmap/Stage_1_Diagnosis/Logs/exp1_baseline_reproduction_<ts>.log
+        (or exp1_baseline_sanity_check_<ts>.log with --sanity-check)
     Roadmap/Stage_1_Diagnosis/Reports/results_ledger.jsonl  (appended)
     Roadmap/Stage_1_Diagnosis/Reports/MASTER_LOG.md         (regenerated)
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -75,18 +90,51 @@ def _actual_train_size(cfg, log) -> int:
     return int(len(valid_idx))
 
 
+SANITY_CHECK_EPOCHS = 3
+SANITY_CHECK_MAX_BATCH_SIZE = 8
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--sanity-check", action="store_true",
+        help=(
+            f"Truncate to {SANITY_CHECK_EPOCHS} epochs, cap batch_size at "
+            f"{SANITY_CHECK_MAX_BATCH_SIZE}, save a checkpoint every epoch, "
+            f"and skip classifier-retraining evaluation. Confirms the "
+            f"pipeline runs end-to-end and the ledger/checkpoint look right "
+            f"before committing to the full run. Logged under a distinct "
+            f"experiment_id so it can never be mistaken for real evidence."
+        ),
+    )
+    args = parser.parse_args()
+
     cfg = load_config()
-    log = get_logger("exp1_baseline_reproduction", cfg=cfg)
+    experiment_id = "exp1_baseline_sanity_check" if args.sanity_check else "exp1_baseline_reproduction"
+    log = get_logger(experiment_id, cfg=cfg)
     seed = int(cfg.seeds[0])
     set_seed(seed)
+
+    if args.sanity_check:
+        log.warning(
+            f"--sanity-check: truncating n_epochs {int(cfg.diffusion.n_epochs)} -> {SANITY_CHECK_EPOCHS}, "
+            f"batch_size {int(cfg.diffusion.batch_size)} -> "
+            f"{min(int(cfg.diffusion.batch_size), SANITY_CHECK_MAX_BATCH_SIZE)}, "
+            f"save_every {int(cfg.diffusion.save_every)} -> 1. "
+            f"THESE NUMBERS ARE NOT EVIDENCE -- crash/plumbing check only."
+        )
+        cfg.diffusion.n_epochs = SANITY_CHECK_EPOCHS
+        cfg.diffusion.batch_size = min(int(cfg.diffusion.batch_size), SANITY_CHECK_MAX_BATCH_SIZE)
+        cfg.diffusion.save_every = 1
 
     models_dir = Path(cfg.paths.outputs.models)
     snapshot_before_write(models_dir)
 
     params = {
+        "sanity_check": bool(args.sanity_check),
         "n_epochs": int(cfg.diffusion.n_epochs),
         "batch_size": int(cfg.diffusion.batch_size),
+        "save_every": int(cfg.diffusion.save_every),
         "lr": float(cfg.diffusion.lr),
         "model_dim": int(cfg.diffusion.model_dim),
         "n_transformer_layers": int(cfg.diffusion.n_transformer_layers),
@@ -95,13 +143,20 @@ def main() -> None:
     }
 
     with ExperimentLogger(
-        experiment_id="exp1_baseline_reproduction",
+        experiment_id=experiment_id,
         stage="Stage_1_Diagnosis",
         root_dir=STAGE1_ROOT,
         params=params,
         seed=seed,
         repo_dir=REPO_ROOT,
     ) as exp:
+        if args.sanity_check:
+            exp.log_note(
+                "SANITY CHECK RUN -- truncated epochs/batch size, checkpoint "
+                "correctness and pipeline plumbing only. Do not cite any "
+                "metric from this run as a Stage 1 finding."
+            )
+
         n_train_actual = _actual_train_size(cfg, log)
         exp.log_metric("n_train_records_actual", n_train_actual)
         exp.log_note(
@@ -113,7 +168,20 @@ def main() -> None:
         # ── Train the baseline diffusion model (existing entrypoint) ───────
         best_val_loss = step04_train(cfg, log)
         exp.log_metric("best_val_loss", best_val_loss)
-        exp.log_artifact(models_dir / "diffusion_best.pt", "trained diffusion checkpoint")
+
+        ckpt_path = models_dir / "diffusion_best.pt"
+        if ckpt_path.exists():
+            exp.log_artifact(ckpt_path, "trained diffusion checkpoint")
+            exp.log_metric("checkpoint_saved", True)
+        else:
+            exp.log_metric("checkpoint_saved", False)
+            exp.log_note(
+                f"diffusion_best.pt does NOT exist at {ckpt_path} after training -- "
+                f"with save_every={int(cfg.diffusion.save_every)} and "
+                f"n_epochs={int(cfg.diffusion.n_epochs)}, no checkpoint boundary "
+                f"was ever reached. This is the exact failure mode --sanity-check "
+                f"exists to catch before a full run wastes GPU time on it."
+            )
         exp.log_artifact(models_dir / "diffusion_architecture.json", "model architecture + best_val_loss")
         exp.log_artifact(Path(cfg.paths.logs) / "diffusion_training_log.csv", "per-epoch training log")
 
@@ -121,8 +189,17 @@ def main() -> None:
         _generate_final_samples(cfg, log)
         exp.log_note("Baseline samples generated via step04's _generate_final_samples().")
 
+        if args.sanity_check:
+            exp.log_note(
+                "Skipping classification_validation_run() for the sanity check -- "
+                "it retrains its own MentorClassifier on ~14k real records for "
+                "30 epochs, which a crash/plumbing check does not need to pay for. "
+                "Run without --sanity-check for real accuracy/macro-F1 numbers."
+            )
+            print(f"Sanity check complete. checkpoint_saved={ckpt_path.exists()}  best_val_loss={best_val_loss:.5f}")
+            return
+
         # ── Real-data + generated-data classifier validation (existing entrypoint) ──
-        ckpt_path = models_dir / "diffusion_best.pt"
         cv_out_dir = Path(cfg.paths.outputs.results).parent / "mentor_review" / "classification_validation"
         classification_validation_run(ckpt_path, cv_out_dir, cfg, seed, log)
 
