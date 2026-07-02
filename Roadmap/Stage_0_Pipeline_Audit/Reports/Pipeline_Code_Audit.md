@@ -569,23 +569,69 @@ verifiable foundation in this codebase.
    implemented as described, or was implemented differently than
    documented.
 
-**This audit cannot determine which. Per the master prompt's own
-standard, this is reported as a gap, not resolved by assumption.**
+**UPDATE (2026-07-02, same day): resolved by independent corroboration,
+not further code archaeology.** A completely unrelated, much earlier
+session in this project's history — sizing local-machine compute budget,
+with no awareness the 380-record claim existed and not investigating this
+question at all — measured real wall-clock throughput and reported:
+*"CPU training: 23 seconds/step at batch=32. 200 epochs × 544 steps/epoch
+would take ~29 days."* Checked directly against what this audit
+independently confirmed:
 
-**Proposed fix (not implemented; not the auditor's call to make):**
-before any further reliance on prior Stage 1/2 conditioning-collapse
-findings, either (a) locate the actual out-of-band artifact/script that
-produced the original 380-record subset, if it exists somewhere outside
-this repository, and bring it under version control; or (b) treat every
-prior conditioning-collapse finding built on the 380-record narrative as
-**provisionally retracted, pending reproduction** — the same standard
-already applied to the Stage 2 Verification Gate's unfindable numbers —
-and re-derive baseline findings from a population that is actually
-reproducible in this repository (e.g. the full corpus, or a newly-defined
-and version-controlled curated subset with an explicit, committed
-selection mechanism).
+```
+17,418 / 32 = 544.3125 -> floor 544 (step04's DataLoader uses drop_last=True,
+                                       confirmed at step04_transformer_diffusion.py:793-796,
+                                       so 544 is the exact real per-epoch step count,
+                                       not a rounding coincidence)
 
-**This finding blocks `--sanity-check` and any further GPU-server
-execution until a human decides how to resolve it** — not because
-`--sanity-check` itself would fail, but because authorizing it would
-implicitly treat the unresolved 380-record question as settled.
+380 / 32 -> floor 11 steps/epoch, 200 epochs = 2,200 total steps
+           (consistent with the "under ten minutes" framing)
+17,418 / 32 -> floor 544 steps/epoch, 200 epochs = 108,800 total steps
+           (not remotely consistent with "under ten minutes" on any realistic GPU)
+```
+
+**Two independent measurements — one via exhaustive code+git-history
+search (this audit), one via direct runtime benchmarking (an unrelated
+earlier session, measuring the same `X_train.npy` for an unrelated
+reason) — agree with each other on ~17,418 records, and both actively
+contradict the "380 curated sequences, sub-ten-minute 200-epoch run"
+framing.** This is stronger than absence-of-evidence alone: it is a
+positive, independent, unprompted measurement landing on the same number
+this audit found by a completely different method.
+
+**Disposition: do not attempt further reconstruction of the 380-record
+population's origin.** The real, long-standing training population is
+confirmed as ~17,418 records (the full mapped PTB-XL train split), with
+no subsetting mechanism ever present in this codebase. The entire
+"Investigation Timeline" section of the original consolidated report
+(embedding-scale experiment, AdaLN-Zero, decoupled signals, the CFG
+sweep, every conditioning-collapse percentage, the AFIB-attractor
+findings) is **historical narrative only** as of this finding — not
+"pending reproduction" in the neutral sense used elsewhere in this
+project (where code exists and simply hasn't been run yet), but
+specifically flagged as **contradicted by direct evidence regarding the
+population it claims to have run against**. No number from that report
+should be cited as motivation for Stage 2 priority ordering — including
+the LayerScale hypothesis's promotion to first-in-line in
+`Stage2_Master_Prompt.md`, which was partly justified by that report's
+layer-wise decay claim — until independently re-derived from a real run
+in this repository.
+
+**Structural consequence for the earlier-flagged dataset-scaling bug:**
+the old Experiment 2 run that reported `n_train_records_actual=380`
+identically across all six requested sizes makes even less sense in
+light of this finding than when it was first caught — it was never a
+slicing-call bug reusing a fixed 380-record array, because **no code path
+in this repository was ever capable of producing a 380-record training
+set at all**, let alone six times consistently. Those ledger entries are
+historical narrative, same as the rest of the pre-audit findings — not
+evidence to reconcile with. If a genuine dataset-scaling experiment is
+wanted later, it needs to be *built* (a real, documented, version-controlled
+subsetting mechanism — e.g. a `max_samples_per_class` config field with a
+stratified sampler, committed as its own reviewable change), not
+retrofitted onto the old script.
+
+**`--sanity-check` is authorized** — against the real, confirmed
+17,418-record corpus. Do not artificially subsample to 380 to match the
+old narrative; that would be fitting the data to a conclusion, backwards
+from how this entire audit has been conducted.

@@ -1,44 +1,49 @@
 # Stage 0 Pipeline Audit — Fix Plan
 
-**Updated 2026-07-02: 1 Critical finding now exists (Finding 14).** The
-three fixes below (Findings 5, 6, 8) were implemented and committed
-*before* Finding 14 was discovered — they are correct fixes for what they
-claim to fix, and remain in place. But Finding 14 means their
-before/after verification diffs (run on the full 17,418-record corpus)
-may not describe the actual ~380-record population every prior
-conditioning-collapse finding in this project was built on. **Finding 14
-is the current blocker, superseding the original "no Critical findings"
-framing this document opened with.**
+**Updated 2026-07-02 (same day, twice): Finding 14 was raised as Critical,
+then resolved.** The three fixes below (Findings 5, 6, 8) were implemented
+and committed before Finding 14 was raised — they are correct and remain
+in place, and their verification diffs (run on the full 17,418-record
+corpus) are now confirmed to describe the real population, not a
+different one.
 
-## CRITICAL — blocks `--sanity-check` and all further GPU execution
+## RESOLVED — Finding 14: the ~380-record curated training population question
 
-### Finding 14 — The ~380-record curated training population has no corresponding code path anywhere in this repository
+**What was found:** no code in this repository's current tree, or full
+git history across all branches, produces a 380-record training subset.
+`X_train.npy` is confirmed `(17418, 1000, 12)`.
 
-**Why this blocks everything else:** every fix in this plan, and every
-verification diff run against those fixes, assumed the training
-population was whatever `step02`/`step04` currently produce from the full
-PTB-XL corpus. Prior investigation reports (LaTeX Table 3) describe a
-*different*, much smaller (~380-record) curated population with a
-specific per-class breakdown (NORM=231, STTC=50, CD=45, MI=36, HYP=16,
-OTHER=2) that no code in this repository's current tree, or anywhere in
-its full git history across all branches, produces. `X_train.npy` on this
-machine is confirmed `(17418, 1000, 12)` — not 380.
+**How it was resolved:** an independent, unrelated earlier session in
+this project's history — sizing local Mac compute budget, with no
+awareness the 380-record claim existed — measured real wall-clock
+throughput and reported "544 steps/epoch." `17,418 // 32 = 544` exactly
+(verified: `step04_transformer_diffusion.py`'s `DataLoader` uses
+`drop_last=True`, so 544 is the literal per-epoch step count, not a
+rounding artifact). Two independent methods — this session's code+history
+search, and that earlier session's runtime benchmark — landed on the same
+number for unrelated reasons, and both actively contradict the "380
+curated sequences, sub-ten-minute run" framing (380/32 floor = 11
+steps/epoch, 2,200 total — the math that framing would need; 17,418
+records gives 108,800 total steps instead).
 
-**This is not resolvable by more code review.** Two possibilities, not
-distinguishable from this repository alone: (a) the 380-record population
-was built out-of-band on a different machine/session and never committed
-(`outputs/` is gitignored by design), and has since been silently
-overwritten by a full-corpus run; or (b) the "380 curated sequences"
-narrative was never actually implemented as described. **A human needs to
-either locate the actual artifact/script (if it exists somewhere outside
-this repo) or decide to treat every prior conditioning-collapse finding
-as provisionally retracted pending reproduction from a population that
-demonstrably exists in this codebase.**
+**Disposition:** the real, long-standing training population is
+~17,418 records. The entire prior "Investigation Timeline" (embedding-
+scale experiment, AdaLN-Zero, decoupled signals, CFG sweep, every
+conditioning-collapse percentage, AFIB-attractor findings) is
+**historical narrative only** — not evidence — until independently
+re-derived from a real run in this repository. No number from that
+report should motivate Stage 2 priority ordering (including the
+LayerScale hypothesis's promotion to first-in-line) until then. The old
+dataset-scaling experiment's `n_train_records_actual=380` ledger entries
+are the same: historical narrative, not a bug to fix, since no code path
+was ever capable of producing that number in the first place. A genuine
+dataset-scaling experiment, if wanted later, needs a real, documented,
+version-controlled subsetting mechanism built from scratch — not a
+retrofit of the old script.
 
-**Do not run `--sanity-check`, and do not proceed with any further GPU
-execution, until this is resolved one way or the other.** Running
-`--sanity-check` now would implicitly treat this open question as
-settled — it isn't.
+**`--sanity-check` is authorized, against the real, confirmed
+17,418-record corpus.** Do not subsample to 380 to match the old
+narrative.
 
 ---
 
@@ -157,14 +162,16 @@ re-litigated later.
    corpus) does not match the ~380-record population described in every
    prior conditioning-collapse report — and that no code anywhere in this
    repository, current or historical, produces that 380-record
-   population. **This is Finding 14, Critical, and is now the blocker.**
+   population. **This became Finding 14, Critical.**
+4. Resolved same day: an independent, unrelated earlier benchmark session
+   (544 steps/epoch, exactly matching 17,418/32) corroborated the full
+   corpus as the real population. Findings 5/6/8's verification diffs are
+   confirmed accurate as-is.
 
 ## Current state
 
-**Do not begin Steps 1-4 execution or the `--sanity-check` flow.**
-Findings 5/6/8 being fixed does not change this — Finding 14 means the
-population those fixes were verified against may not be the population
-that matters, and until a human resolves where the real ~380-record
-subset comes from (or decides to proceed on the full corpus instead,
-explicitly), authorizing any further GPU execution would be building on
-the same kind of unverified premise this whole audit exists to catch.
+**`--sanity-check` is authorized**, against the real, confirmed
+17,418-record corpus. Do not subsample to 380 to match the old narrative
+— see the Finding 14 resolution above for why that would be backwards.
+Run it, report the ledger entry back, and do not proceed to the full
+200-epoch run until that's reviewed.
