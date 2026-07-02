@@ -8,7 +8,7 @@ venv/
 # Data & generated artifacts (large, regenerable from pipeline)
 data/
 outputs/
-logs/
+/logs/
 
 # OS
 .DS_Store

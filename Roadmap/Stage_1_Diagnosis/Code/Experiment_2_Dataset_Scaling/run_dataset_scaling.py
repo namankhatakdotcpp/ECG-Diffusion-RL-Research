@@ -79,6 +79,9 @@ from mentor_eval.class_mapping import (
 )
 from common_probes import sensitivity_metric, collapse_and_macro_f1
 
+sys.path.insert(0, str(REPO_ROOT / "Roadmap" / "_infra"))
+from experiment_logger import ExperimentLogger
+
 OUT_DIR = REPO_ROOT / "Roadmap" / "Stage_1_Diagnosis" / "Outputs" / "Experiment_2_Dataset_Scaling"
 FIG_DIR = REPO_ROOT / "Roadmap" / "Stage_1_Diagnosis" / "Figures" / "Experiment_2_Dataset_Scaling"
 DATASET_SIZES_DEFAULT = [380, 1000, 2500, 5000, 10000, "full"]
@@ -309,42 +312,58 @@ def main() -> None:
 
     rows = []
     for size in sizes:
-        target = len(X_train_full) if size == "full" else size
-        log.info(f"=== Dataset size: {size} (target={target}) ===")
-        sub_idx = stratified_subset(y_train_full, target, rng)
-        X_sub, y_sub = X_train_full[sub_idx], y_train_full[sub_idx]
-        log.info(f"  Subset: {len(X_sub)} records, "
-                 f"distribution={dict(Counter(class_names[i] for i in y_sub.tolist()))}")
+        with ExperimentLogger(
+            experiment_id=f"exp2_dataset_scaling_{size}",
+            stage="Stage_1_Diagnosis",
+            root_dir=REPO_ROOT / "Roadmap" / "Stage_1_Diagnosis",
+            params={"dataset_size_requested": size, "n_epochs": n_epochs,
+                    "curve_every": args.curve_every, "n_gen_per_class": args.n_gen_per_class},
+            seed=SEED,
+            repo_dir=REPO_ROOT,
+        ) as exp:
+            target = len(X_train_full) if size == "full" else size
+            log.info(f"=== Dataset size: {size} (target={target}) ===")
+            sub_idx = stratified_subset(y_train_full, target, rng)
+            X_sub, y_sub = X_train_full[sub_idx], y_train_full[sub_idx]
+            log.info(f"  Subset: {len(X_sub)} records, "
+                     f"distribution={dict(Counter(class_names[i] for i in y_sub.tolist()))}")
+            exp.log_metric("n_train_records_actual", len(X_sub))
 
-        model, diffusion, ema, train_stats, curve_rows = train_diffusion_on_subset(
-            X_sub, y_sub, n_classes, cfg, n_epochs, device, log,
-            curve_every=args.curve_every, curve_clf=clf, curve_class_names=class_names,
-            curve_prep_stats=prep_stats, curve_n_gen=args.curve_n_gen, curve_seed=SEED,
-        )
+            model, diffusion, ema, train_stats, curve_rows = train_diffusion_on_subset(
+                X_sub, y_sub, n_classes, cfg, n_epochs, device, log,
+                curve_every=args.curve_every, curve_clf=clf, curve_class_names=class_names,
+                curve_prep_stats=prep_stats, curve_n_gen=args.curve_n_gen, curve_seed=SEED,
+            )
+            exp.log_metrics(train_stats)
 
-        if curve_rows:
-            pd.DataFrame(curve_rows).to_csv(OUT_DIR / f"training_curves_size_{size}.csv", index=False)
+            if curve_rows:
+                curve_csv = OUT_DIR / f"training_curves_size_{size}.csv"
+                pd.DataFrame(curve_rows).to_csv(curve_csv, index=False)
+                exp.log_artifact(curve_csv, "per-epoch training curve for this dataset size")
 
-        ckpt_dir = OUT_DIR / "checkpoints" / f"size_{size}"
-        ckpt_dir.mkdir(parents=True, exist_ok=True)
-        torch.save(
-            {"model": model.state_dict(), "ema_shadow": ema.shadow,
-             "class_names": class_names, "n_classes": n_classes},
-            ckpt_dir / "diffusion_best.pt",
-        )
+            ckpt_dir = OUT_DIR / "checkpoints" / f"size_{size}"
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
+            ckpt_path = ckpt_dir / "diffusion_best.pt"
+            torch.save(
+                {"model": model.state_dict(), "ema_shadow": ema.shadow,
+                 "class_names": class_names, "n_classes": n_classes},
+                ckpt_path,
+            )
+            exp.log_artifact(ckpt_path, f"diffusion checkpoint trained on {len(X_sub)} records")
 
-        eval_stats = evaluate_with_fixed_classifier(
-            model, diffusion, class_names, clf, device, cfg, prep_stats,
-            args.n_gen_per_class, SEED,
-        )
-        log.info(f"  {train_stats} | {eval_stats}")
+            eval_stats = evaluate_with_fixed_classifier(
+                model, diffusion, class_names, clf, device, cfg, prep_stats,
+                args.n_gen_per_class, SEED,
+            )
+            exp.log_metrics(eval_stats)
+            log.info(f"  {train_stats} | {eval_stats}")
 
-        rows.append({"dataset_size": size, "n_train_records": len(X_sub),
-                     **train_stats, **eval_stats})
-        pd.DataFrame(rows).to_csv(OUT_DIR / "dataset_scaling_metrics.csv", index=False)
-        del model, diffusion, ema
-        if device == "cuda":
-            torch.cuda.empty_cache()
+            rows.append({"dataset_size": size, "n_train_records": len(X_sub),
+                         **train_stats, **eval_stats})
+            pd.DataFrame(rows).to_csv(OUT_DIR / "dataset_scaling_metrics.csv", index=False)
+            del model, diffusion, ema
+            if device == "cuda":
+                torch.cuda.empty_cache()
 
     with open(OUT_DIR / "dataset_scaling_metrics.json", "w") as f:
         json.dump(rows, f, indent=2)

@@ -20,11 +20,14 @@ Roadmap/
     MASTER_PROGRESS.md         — single-page status across all stages
     roadmap.json                — machine-readable stage/experiment status
 
-    Stage_1_Diagnosis/          — why does conditioning fail?
-    Stage_2_Training/           — (not started — gated on Stage 1 decision)
-    Stage_3_Architecture/       — (not started — gated on Stage 1 decision)
-    Stage_4_Optimization/       — (not started)
-    Stage_5_Final_Model/        — (not started)
+    Stage_1_Diagnosis/                    — why does conditioning fail?
+    Stage_2_Architecture_Investigation/   — (not started — gated on Stage 1 decision)
+                                             verification + audit + Tier 0 measurement,
+                                             no architecture changes
+    Stage_3_Architecture_Improvements/    — (not started — gated on Stage 2 Tier 0 evidence)
+                                             actual architecture changes, one at a time
+    Stage_4_Optimization/                 — (not started)
+    Stage_5_Final_Model/                  — (not started)
 ```
 
 Each stage folder contains:

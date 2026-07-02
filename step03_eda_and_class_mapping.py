@@ -48,7 +48,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
-from utils import load_config, get_logger, set_seed
+from utils import load_config, get_logger, set_seed, assign_primary_class
 
 warnings.filterwarnings("ignore")
 
@@ -136,14 +136,22 @@ def _build_code_to_class(
 
 
 def _assign_primary(scp_dict: dict[str, float], code_map: dict[str, str]) -> str:
-    """Return the superclass with the highest-confidence SCP code."""
+    """
+    Return the superclass with the highest-confidence SCP code.
+
+    Ties at the maximum confidence are broken by
+    utils.label_assignment.TIE_BREAK_PRIORITY (MI > STTC > CD > HYP > NORM
+    > OTHER, a clinical-severity ordering — not dict-iteration order, see
+    Roadmap/Stage_0_Pipeline_Audit/Reports/Pipeline_Code_Audit.md Finding 5).
+    Delegates to the same shared function step04_transformer_diffusion.py's
+    _load_class_labels() uses, so the two selection rules cannot silently
+    diverge (Finding 4 confirmed they agreed before this fix; this keeps
+    that guarantee structural rather than incidental).
+    """
     if not scp_dict:
         return "OTHER"
-    best_code, best_conf = "", -1.0
-    for code, conf in scp_dict.items():
-        if conf > best_conf and code.upper() in code_map:
-            best_code, best_conf = code, conf
-    return code_map.get(best_code.upper(), "OTHER")
+    result = assign_primary_class(scp_dict, code_map)
+    return result if result is not None else "OTHER"
 
 
 def _determine_classes(

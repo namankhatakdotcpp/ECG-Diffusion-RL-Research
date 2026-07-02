@@ -53,7 +53,7 @@ from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
-from utils import load_config, get_logger, set_seed
+from utils import load_config, get_logger, set_seed, assign_primary_class
 from utils.backup import snapshot_before_write
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -460,7 +460,13 @@ def _load_class_labels(
     """
     Map each record_id → integer class index using class_mapping.json.
 
-    Uses the highest-confidence SCP code that maps to a final class.
+    Uses the highest-confidence SCP code that maps to a final class. Ties
+    at the maximum confidence are broken by
+    utils.label_assignment.TIE_BREAK_PRIORITY (a clinical-severity
+    ordering, not dict-iteration order — see
+    Roadmap/Stage_0_Pipeline_Audit/Reports/Pipeline_Code_Audit.md
+    Finding 5), via the same shared function step03's _assign_primary()
+    uses, so the two selection rules cannot silently diverge.
     Records with no recognisable code are assigned to OTHER (if present) or dropped.
 
     Returns:
@@ -480,13 +486,9 @@ def _load_class_labels(
         if not scp:
             continue
 
-        best_cls, best_conf = None, -1.0
-        for code, conf in scp.items():
-            mapped = class_mapping.get(code.upper())
-            if mapped and mapped in name_to_idx and conf > best_conf:
-                best_cls, best_conf = mapped, conf
+        best_cls = assign_primary_class(scp, class_mapping)
 
-        if best_cls is None:
+        if best_cls is None or best_cls not in name_to_idx:
             if "OTHER" in name_to_idx:
                 best_cls = "OTHER"
             else:
@@ -687,6 +689,17 @@ def _resolve_device(cfg) -> str:
     return "cpu"
 
 
+# Checkpoint retention: periodic diffusion_ckpt_ep*.pt files were previously
+# never deleted, accumulating indefinitely (measured at 135.1MB each -- see
+# Roadmap/Stage_0_Pipeline_Audit/Reports/Pipeline_Code_Audit.md Finding 8).
+# Keep only the most recent N periodic checkpoints from THIS run, plus
+# diffusion_best.pt (which is never touched by this pruning). Applies
+# forward-only: only tracks/deletes checkpoints this run itself saved,
+# never globs and deletes pre-existing files in models_dir (those are
+# already relocated by snapshot_before_write before training starts).
+KEEP_LAST_N_CHECKPOINTS = 2
+
+
 def train(cfg, log) -> float:
     device = _resolve_device(cfg)
     log.info(f"Device: {device}")
@@ -717,6 +730,21 @@ def train(cfg, log) -> float:
         class_mapping = {c: c for c in class_names}
 
     n_classes = len(class_names)
+
+    # Hard, loud failure instead of silent mismatch: config.yaml's
+    # ptbxl.n_classes must agree with whatever class_names ended up being
+    # (real class_names.json, or the config.ptbxl.classes fallback above).
+    # A prior version of config.yaml declared 7 classes (incl. AFIB) while
+    # the real class_names.json had 6 -- that mismatch was only caught by
+    # a manual code audit, weeks later. This assertion turns any future
+    # recurrence into an immediate crash at the start of training instead.
+    # See Roadmap/Stage_0_Pipeline_Audit/Reports/Pipeline_Code_Audit.md Finding 6.
+    assert int(cfg.ptbxl.n_classes) == n_classes, (
+        f"config.yaml declares ptbxl.n_classes={int(cfg.ptbxl.n_classes)} but "
+        f"the class list actually in use has {n_classes} classes: {class_names}. "
+        f"These must agree -- fix config.yaml's ptbxl.classes/n_classes to match "
+        f"the real class_names.json (or vice versa if class_names.json is stale)."
+    )
 
     # ── Load signals ──────────────────────────────────────────────────────────
     for p in (
@@ -823,6 +851,7 @@ def train(cfg, log) -> float:
     n_epochs      = int(d.n_epochs)
     save_every    = int(d.save_every)
     log_interval  = int(cfg.logging.log_interval)
+    saved_periodic_ckpts: list[Path] = []  # this run's own periodic checkpoints, oldest first
 
     log.info(f"Training: {n_epochs} epochs × {len(train_loader)} steps")
 
@@ -918,8 +947,18 @@ def train(cfg, log) -> float:
                 "class_names": class_names,
                 "n_classes":   n_classes,
             }
-            torch.save(ckpt, str(models_dir / f"diffusion_ckpt_ep{epoch:04d}.pt"))
+            ckpt_path = models_dir / f"diffusion_ckpt_ep{epoch:04d}.pt"
+            torch.save(ckpt, str(ckpt_path))
             log.info(f"Checkpoint → diffusion_ckpt_ep{epoch:04d}.pt")
+            saved_periodic_ckpts.append(ckpt_path)
+
+            # Retention: keep only the most recent KEEP_LAST_N_CHECKPOINTS
+            # periodic checkpoints from this run. diffusion_best.pt is
+            # untouched (saved separately below, never appended to this list).
+            while len(saved_periodic_ckpts) > KEEP_LAST_N_CHECKPOINTS:
+                stale_ckpt = saved_periodic_ckpts.pop(0)
+                stale_ckpt.unlink(missing_ok=True)
+                log.info(f"Pruned old checkpoint → {stale_ckpt.name} (keeping last {KEEP_LAST_N_CHECKPOINTS})")
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss

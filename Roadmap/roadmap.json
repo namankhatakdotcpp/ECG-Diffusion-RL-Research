@@ -43,14 +43,16 @@
       ]
     },
     {
-      "id": "Stage_2_Training",
-      "goal": "TBD pending Stage 1 decision",
-      "status": "not_started"
+      "id": "Stage_2_Architecture_Investigation",
+      "goal": "Verify Stage 1 findings, audit repository provenance, and measure (no retraining) where/why conditioning fails inside the model -- Tier 0 only. Tier 1 (actual architecture changes) is Stage 3's job, not this stage's, even though both are planned in the same Stage2_Master_Prompt.md for continuity.",
+      "status": "not_started",
+      "note": "Renamed from Stage_2_Training 2026-07-02 -- was an empty placeholder, no content lost."
     },
     {
-      "id": "Stage_3_Architecture",
-      "goal": "TBD pending Stage 1 decision",
-      "status": "not_started"
+      "id": "Stage_3_Architecture_Improvements",
+      "goal": "Implement architecture changes justified by Stage 2 Tier 0 evidence (e.g. LayerScale-style per-block gain, cross-attention, auxiliary classifier loss), one variable changed at a time.",
+      "status": "not_started",
+      "note": "Renamed from Stage_3_Architecture 2026-07-02 -- was an empty placeholder, no content lost. Receives Stage2_Master_Prompt.md's Tier 1 items (9-11) as its own experiments, not nested under Stage 2."
     },
     {
       "id": "Stage_4_Optimization",
