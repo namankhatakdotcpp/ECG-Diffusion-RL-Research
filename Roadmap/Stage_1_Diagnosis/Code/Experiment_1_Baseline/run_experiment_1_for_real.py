@@ -165,6 +165,23 @@ def main() -> None:
             f"reused, not reimplemented."
         )
 
+        # Logged above regardless of outcome; this assertion is what turns
+        # "confirm by reading MASTER_LOG.md" into "the run refuses to
+        # proceed if wrong" -- same upgrade already applied to the SSH
+        # runbook's disk-headroom check. Threshold of 10,000 is a wide
+        # margin below the real, confirmed population (~17,418) and well
+        # above the old, non-existent "380 curated subset" narrative --
+        # see Roadmap/Stage_0_Pipeline_Audit/Reports/Pipeline_Code_Audit.md
+        # Finding 14. If this ever fires, it means a NEW bug reproduced
+        # the exact symptom that narrative described, not that the
+        # narrative was right all along.
+        assert n_train_actual > 10_000, (
+            f"n_train_records_actual={n_train_actual} -- expected the full "
+            f"~17,418-record corpus. This matches the exact symptom of the "
+            f"old, non-existent 380-record subsetting narrative (Finding 14). "
+            f"Do not proceed."
+        )
+
         # ── Train the baseline diffusion model (existing entrypoint) ───────
         best_val_loss = step04_train(cfg, log)
         exp.log_metric("best_val_loss", best_val_loss)
