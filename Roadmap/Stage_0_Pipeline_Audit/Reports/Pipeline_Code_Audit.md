@@ -490,3 +490,102 @@ word "token" used in its ML/transformer sense). Git history scan and a
 separate scan for ever-committed credential-looking filenames
 (`.env`, `.pem`, `.key`, `id_rsa`, etc.) both returned zero results.
 **Clean.**
+
+---
+
+## Finding 14 (added 2026-07-02) — The "~380 curated training sequences" described in prior reports corresponds to NO code path anywhere in this repository
+
+**Severity: CRITICAL**
+
+Every original investigation report (the consolidated LaTeX report,
+Table 3 specifically) states the diffusion model trains on "a curated
+subset of 380 sequences (85 held out for validation) — far smaller than
+full PTB-XL (≈21,799 records)," with a stated per-class breakdown
+(NORM=231, STTC=50, CD=45, MI=36, HYP=16, OTHER=2) and a stated
+justification ("a full 200-epoch run completes in under ten minutes").
+
+**Exhaustively searched for the mechanism that would produce this subset
+— found nothing:**
+
+```
+$ grep -in "max_samples\|curated\|subset_size\|n_samples_per_class\|sample_cap\|max_per_class\|380" config.yaml
+(no output)
+
+$ grep -rniE "curated|downsampl|subsampl|max_samples|sample_cap|max_per_class" \
+    step01_data_load_and_visualise.py step02_preprocessing.py \
+    step03_eda_and_class_mapping.py step04_transformer_diffusion.py config.yaml utils/*.py
+(no output -- only unrelated matches: step03's morphology-analysis sampling,
+ which subsamples for a FIGURE, not for training data, and is unrelated to
+ the training population)
+```
+
+Specifically checked and ruled out as the source of any capping:
+- `step02_preprocessing.py:_load_split` (lines 403-464) — processes
+  **every** record in each fold's split; the only `continue` in the loop
+  is for unreadable files, not a per-class cap.
+- `step04_transformer_diffusion.py:ECGDataset.__init__` (lines 503-514) —
+  wraps whatever `X`/`labels` arrays are passed to it verbatim, no
+  filtering or capping logic inside.
+- `step04_transformer_diffusion.py:train()` — loads
+  `outputs/processed/X_train.npy` in full; the only reduction applied is
+  `_load_class_labels`'s class-validity filter (drops unrecognized-code
+  records), not a per-class size cap.
+- **The real `X_train.npy` on this machine has shape `(17418, 1000, 12)`**
+  — confirmed directly, not estimated. 17,418, not 380.
+- **Full git history, all commits, all branches**
+  (`git log --all -p -- '*.py' '*.yaml'`) searched for
+  `curated`/`max_samples_per_class`/`subset_size` and equivalents — the
+  only "curated" match anywhere in this repo's history is an unrelated
+  docstring about SCP-code mapping ("hand-curated map"), not a
+  data-subsetting mechanism. No commit, on any branch, ever added
+  subsetting logic matching this description.
+
+**Conclusion:** the ~380-record curated diffusion-training population
+described in prior reports does not correspond to any code path that
+exists now, or ever existed, in this repository's version-controlled
+history. This is the same class of problem the Stage 2 Verification Gate
+caught (unfindable "0.91→0.24 layer-wise decay" and "~2-7% generated
+accuracy" numbers) and this same audit already caught once (the
+unfindable "500Hz" claim, Finding 3) — a specific number with confident
+prose provenance and no located artifact — but at materially higher
+severity here, because **this is not a downstream metric, it's the
+claimed identity of the training population itself.** Every
+conditioning-collapse finding, every per-class comparison (e.g.
+"NORM (231) collapses at the same rate as OTHER (2)"), and every
+Stage 1/2 interpretation built on that narrative currently has no
+verifiable foundation in this codebase.
+
+**Two non-alarmist explanations, not distinguishable from code alone:**
+1. The 380-record population was constructed out-of-band (a notebook, an
+   ad-hoc script, or a manual step run once on a different machine/session)
+   and the specific `X_train.npy`/`record_ids_train.npy` it used were
+   never committed (`outputs/` is gitignored by design — these are
+   regenerable artifacts, not source). A later full-corpus step02 run
+   (the one that produced the current `outputs/processed/` on this
+   machine) would have silently overwritten it with no trace, since
+   nothing about that file pair is under version control.
+2. The "380 curated sequences" narrative in the prior report describes
+   an intended/aspirational methodology that was never actually
+   implemented as described, or was implemented differently than
+   documented.
+
+**This audit cannot determine which. Per the master prompt's own
+standard, this is reported as a gap, not resolved by assumption.**
+
+**Proposed fix (not implemented; not the auditor's call to make):**
+before any further reliance on prior Stage 1/2 conditioning-collapse
+findings, either (a) locate the actual out-of-band artifact/script that
+produced the original 380-record subset, if it exists somewhere outside
+this repository, and bring it under version control; or (b) treat every
+prior conditioning-collapse finding built on the 380-record narrative as
+**provisionally retracted, pending reproduction** — the same standard
+already applied to the Stage 2 Verification Gate's unfindable numbers —
+and re-derive baseline findings from a population that is actually
+reproducible in this repository (e.g. the full corpus, or a newly-defined
+and version-controlled curated subset with an explicit, committed
+selection mechanism).
+
+**This finding blocks `--sanity-check` and any further GPU-server
+execution until a human decides how to resolve it** — not because
+`--sanity-check` itself would fail, but because authorizing it would
+implicitly treat the unresolved 380-record question as settled.
