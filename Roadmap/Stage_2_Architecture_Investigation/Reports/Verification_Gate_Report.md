@@ -1,118 +1,92 @@
-# Stage 2.0 — Verification Gate Report
+# Stage 2.0 — Verification Gate Report (real data)
 
-**Status: BLOCKED — cannot proceed as specified.**
+**Status: PASSED.** This supersedes the earlier
+`Verification_Gate_Report.md` written when no Stage 1 ledger existed
+locally. `stage1_results.tar.gz` has since been extracted; this report
+is derived entirely from those real, on-disk artifacts — every number
+below was independently read, cross-checked, or recomputed, not restated
+from a prior chat summary.
 
-## What was checked
+## 1. Ledger presence and completeness
 
-Per the Stage 2 master prompt, Stage 2.0 requires:
 `Roadmap/Stage_1_Diagnosis/Reports/results_ledger.jsonl` and
-`Roadmap/Stage_1_Diagnosis/Reports/MASTER_LOG.md` to exist on disk.
+`MASTER_LOG.md` are present locally (extracted from the tar.gz, untracked
+in git per the current repo policy — see `.gitignore`). Regenerated
+`MASTER_LOG.md` locally against the real ledger:
 
 ```
-$ ls Roadmap/Stage_1_Diagnosis/Reports/
-Architecture_Review_Findings.md
-Stage1_Results_Digest.md
-baseline_report.md
-classifier_validation_report.md
-dataset_scaling_report.md
-directional_conditioning_report.md
-
-$ find Roadmap/Stage_1_Diagnosis -iname "Logs" -o -iname "*ledger*"
-(no output)
+## Flags (automated sanity checks)
+_No anomalies detected._
 ```
 
-**Neither `results_ledger.jsonl` nor `MASTER_LOG.md` exists anywhere under
-`Roadmap/Stage_1_Diagnosis`.** There is no `Logs/` directory either.
+7 entries, all `status: success`: `exp1_baseline_reproduction` and
+`exp2_dataset_scaling_{380,1000,2500,5000,10000,full}`. No failures, no
+crashes, zero flags. This also confirms the `build_master_log.py` fix
+(committed earlier this session, `d0f43dd`) works correctly against the
+real dataset it was designed for — the exact `batch_size` vs
+`n_train_records_actual` and constant-`n_generated` patterns that would
+have false-flagged this data under the old logic do not fire.
 
-## Why, not just that
+## 2. Cross-checked headline numbers (ledger vs. independent artifact)
 
-This is not a mystery to investigate — it's a straightforward sequencing
-fact from this project's own history. `ExperimentLogger` and
-`build_master_log.py` (the tools that produce `results_ledger.jsonl` and
-`MASTER_LOG.md`) were designed and built in *this session*, specifically
-as prep for Stage 2, and committed only just now (`d374995`). Stage 1's
-actual experiments — including the one real result that exists,
-Experiment 4's MentorClassifier verification — were run *before* that
-infrastructure existed, using an earlier, purpose-built (ECG-specific, not
-generic) mechanism: `Roadmap/Stage_1_Diagnosis/collect_stage1_results.py`,
-which produced `Reports/Stage1_Results_Digest.md` by scanning known output
-file paths directly, not a JSON-Lines ledger.
+| Check | Ledger value | Independent source | Match? |
+|---|---|---|---|
+| `exp1` `best_val_loss` | 0.0623630982... | `outputs/models/diffusion_architecture.json`'s `best_val_loss` | **Exact match** |
+| `exp2` all 6 sizes' `collapse_frac`, `accuracy`, `macro_f1`, `train_time_sec`, `peak_gpu_mem_gb`, `final_train_loss`, `n_generated` | — | `Roadmap/Stage_1_Diagnosis/Outputs/Experiment_2_Dataset_Scaling/dataset_scaling_metrics.csv` | **Exact match, every field, all 6 rows** |
 
-So the Verification Gate's literal instruction ("if either is missing,
-stop and report exactly what is missing") is correctly triggered — but the
-underlying cause is a tooling-generation-order gap, not evidence that
-Stage 1's results are unreliable or unverified in some other sense.
+## 3. Off-by-one record-count mechanism — VERIFIED, not merely plausible
 
-## What Stage 1 evidence actually exists, and its real verification status
+Real requested-vs-actual counts:
 
-Reading `Stage1_Results_Digest.md` (the actual artifact Stage 1 produced)
-directly, rather than assuming the ledger's absence means no evidence
-exists at all:
-
-| Experiment | Status per digest | Ledger-based re-verification possible? |
+| Requested | Actual (`n_train_records_actual`) | Deviation |
 |---|---|---|
-| 1 — Baseline Reproduction | Not run (no GPU checkpoint on the dev machine) | No — never ran |
-| 1.5 — Checkpoint Verification | Not run (depends on Exp 1) | No |
-| 2 — Dataset Scaling | Not run (needs GPU server) | No |
-| 2.5 — Training Curves | Not run (built into Exp 2) | No |
-| 3 — Directional Conditioning | Not run (needs GPU server) | No |
-| 3.5 — Layer-wise Direction Probe | Not run (needs Exp 1's checkpoint) | No |
-| **4 — MentorClassifier Verification** | **Complete, ran locally** | **Yes, in principle — but not via a ledger; via re-running the script and diffing its CSV output** |
-| 4.5 — Feature Drift Visualization | Real+noise half complete; generated-sample half pending Exp 1 | Partially, same caveat as 4 |
+| 380 | 379 | 1 |
+| 1000 | 999 | 1 |
+| 2500 | 2500 | 0 |
+| 5000 | 5000 | 0 |
+| 10000 | 9999 | 1 |
+| 17418 (full) | 17418 | 0 |
 
-**Correction to the Stage 2 prompt's "PROJECT CONTEXT" section:** that
-section states, as background, "Real-data MentorClassifier: ~83% accuracy,
-~0.95 macro AUC" and "Generated-data classifier accuracy: ~2-7%,
-near-chance or below" and a layer-wise magnitude-decay claim
-(0.91 → 0.24) as things reported but not yet confirmed. Based on what
-actually exists in this repository:
+This matches the mechanism already traced earlier this session (not a
+new hypothesis): `run_dataset_scaling.py`'s `stratified_subset()`
+independently rounds each of the 6 real classes' share via
+`max(1, round(len(idxs) * frac))`, so the aggregate deviation from the
+requested total is bounded by per-class rounding, empirically measured
+at 0-2 records against this exact real class distribution earlier this
+session, and confirmed again here against the actual production run
+(0, 0, 0, 1, 1, 1) — consistent, well inside the registered tolerance
+(5) in `build_master_log.py`'s `REQUESTED_ACTUAL_PAIRS`. **Verified**,
+not "plausible" — the code path has been read, the mechanism traced, and
+now two independent measurements (a standalone empirical test earlier,
+and this real production run) agree.
 
-- The real-data number is close but not identical to what's on disk:
-  `outputs/mentor_review/classification_validation/classifier_real_eval.json`
-  (pre-existing, predates this session) reports accuracy=0.8437,
-  macro_f1=0.7428, macro_auc=0.9582 — consistent with "~83%/~0.95" as a
-  rough paraphrase.
-- **The generated-data classifier accuracy (~2-7%) and the layer-wise
-  magnitude-decay numbers (0.91 → 0.24) do not correspond to anything in
-  this repository.** No generated-data classifier evaluation exists
-  (Experiment 1 has never been run — no checkpoint exists on any machine
-  this session has access to), and no layer-wise probe has been run
-  either (Experiment 3.5 requires Experiment 1's checkpoint, which does
-  not exist). These specific numbers must have come from a different run,
-  a different environment, or a different conversation than the one that
-  produced this repository's actual Stage 1 output. **They should not be
-  treated as background fact for this repository's Stage 2 investigation
-  until Experiment 1 actually runs on the GPU server and produces them
-  here.**
+## 4. Cross-check against prior "PROJECT CONTEXT" claims — mostly confirmed, one overstated
 
-## Verdict
+| Claim | Verified against real data | Verdict |
+|---|---|---|
+| Full corpus: 17,418 training records | `exp1` and `exp2_full` both show 17418 | **Confirmed** |
+| Real-data MentorClassifier: 83.49% accuracy, 0.9554 macro AUC | `real_data_accuracy=0.83489...`, `real_data_macro_auc=0.95545...` | **Confirmed** |
+| Generated-data (full-corpus) accuracy 55.3%, macro F1 0.380 | `generated_data_accuracy=0.55333...`, `generated_data_macro_f1=0.38041...` | **Confirmed** |
+| Scaling sweep did not exhibit the "identical n_train_records" bug | `n_train_records_actual` = 379/999/2500/5000/9999/17418 — scales correctly | **Confirmed** |
+| Collapse fraction non-monotonic (0.94@379, 0.98@5000, 0.91@full) | `collapse_frac` = 0.94/0.6133/0.8/**0.98**/0.9533/**0.91** | **Confirmed exactly** |
+| "Accuracy and macro F1 DO improve with scale" | `accuracy`: 0.017→0.307→0.34→0.343→0.373→**0.413** (monotonic increase, endpoints 0.017→0.413). `macro_f1`: 0.023→0.212→0.182→**0.142**→0.183→**0.231** (**NOT monotonic** — dips at 2500 and again more sharply at 5000, below the 1000-record value, before recovering) | **Overstated for macro_f1.** Accuracy does trend up cleanly; macro_f1's overall direction is up (0.023→0.231) but with a real, non-trivial dip in the middle (5000-record run's macro_f1=0.142 is the *lowest* of all six sizes except the 380 baseline) that a clean "improves with scale" framing hides. Treat macro_f1-vs-scale as noisy/non-monotonic, same caveat class as collapse_frac, not a clean trend. |
 
-- **CONFIRMED, independently re-derivable right now:** Experiment 4's
-  headline finding (AFIB attraction ratio peaking at 3.58x chance at
-  sigma=0.5) — the raw CSV (`noise_robustness.csv`, `prediction_drift.csv`)
-  is on disk and was read directly to write
-  `classifier_validation_report.md`. Re-running
-  `classifier_verification.py` would reproduce it (same seed=42, same
-  deterministic data).
-- **NEEDS-REPRODUCTION:** Experiments 1, 1.5, 2, 2.5, 3, 3.5 — none have
-  ever been run. There is nothing to verify; there's only code to run.
-- **DISQUALIFIED (per this report, not per any MASTER_LOG flag, since none
-  exists):** the "~2-7% generated accuracy" and "0.91→0.24 layer-wise
-  decay" figures quoted in the Stage 2 prompt's context section. Do not
-  cite these anywhere in Stage 2 reasoning until they are produced by an
-  actual run in this repository.
+## 5. Wall-clock rate caveat — restated as unverified, per the hedging correction
 
-## Recommendation
+`exp2_dataset_scaling_full` took 39,980s for 17,418 records
+(~2.30 s/record); the other five sizes' rate: 380→1.53s/rec,
+1000→1.51s/rec, 2500→1.47s/rec, 5000→1.46s/rec, 10000→1.45s/rec — a
+smooth, mild downward trend that breaks at the full-size run. A
+plausible explanation is shared-GPU contention during the ~11-hour full
+run, but this is **not independently verified** against server logs or
+`nvidia-smi` history — I have no access to check that. Stated as a
+caveat for any future compute-cost table, not a settled fact. Does not
+gate anything below; not spending further time chasing it.
 
-1. Do not proceed to Stage 2.2 (dataset-scaling root cause) or any Tier 0
-   item that depends on Experiment 1's checkpoint (items 1-3, 5-8 all
-   need it either directly or via the generated-sample evaluation chain;
-   item 4's gradient-norm comparison needs at least two checkpoints from
-   different epochs, also from Experiment 1).
-2. Going forward, every experiment — including a first, overdue retrofit
-   of Experiment 4 — should be wrapped in `ExperimentLogger` so this gate
-   has something real to check next time. This report itself should be
-   treated as the trigger for that retrofit, not just a one-time
-   exception.
-3. Experiment 1 (and therefore everything downstream of it) still requires
-   the GPU server per Stage 1's own conclusion — this has not changed.
+## 6. Verdict
+
+**PASSED.** Every item is CONFIRMED except the one explicitly marked
+NEEDS-REPRODUCTION-caveat (wall-clock rate anomaly, which doesn't gate
+anything) and the one overstated claim corrected above (macro_f1 vs.
+scale). Proceeding to Stage 2.0.1 (Reproducibility Audit) and Stage
+2.0.5 (Repository Audit) is authorized.
