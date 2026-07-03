@@ -10,17 +10,42 @@ data/
 /outputs/
 /logs/
 
+# ---------------------------------------------------------------------------
+# Experiment artifacts, repo-wide policy (2026-07-05): GitHub holds source
+# code and documentation only. Training runs, evaluation runs, checkpoints,
+# plots, logs, and raw ledger data all live on the GPU server and/or in
+# stageN_results.tar.gz archives extracted locally -- never in git, however
+# small an individual file might look. See Roadmap/README.md for the full
+# Local <-> GPU workflow this supports.
+# ---------------------------------------------------------------------------
+
+# Per-stage experiment output directories (Roadmap/Stage_*/Outputs|Figures|Logs/).
+# Distinct from the root-level /outputs//logs/ above -- these are the
+# per-Roadmap-stage equivalents, not the same directories.
+Roadmap/*/Outputs/
+Roadmap/*/Figures/
+Roadmap/*/Logs/
+
+# Auto-generated ledger/digest files (regenerated from raw experiment runs
+# by ExperimentLogger / build_master_log.py) -- not hand-authored
+# documentation, so not tracked even though they're small and text-based.
+Roadmap/*/Reports/results_ledger.jsonl
+Roadmap/*/Reports/MASTER_LOG.md
+
 # Model checkpoints -- large binaries, regenerable, never tracked anywhere
-# in the repo (including under Roadmap/*/Outputs/, which IS otherwise
-# tracked -- CSVs/JSON metrics there are small, valuable, diffable research
-# record; the checkpoints they were computed from are not).
+# in the repo.
 *.pt
 *.pth
 *.ckpt
 
+# Generated ECG sample arrays (diffusion model output) and any other raw
+# numpy artifacts -- regenerable from a checkpoint, not source or docs.
+*.npy
+*.npz
+
 # Archive tarballs used to move experiment results GPU <-> local -- never
-# committed; contents get extracted, and only the specific paths meant to
-# be tracked (see above) get git-added from there.
+# committed; contents get extracted, and only genuine source/docs paths
+# ever get git-added from there.
 *.tar.gz
 
 # OS
