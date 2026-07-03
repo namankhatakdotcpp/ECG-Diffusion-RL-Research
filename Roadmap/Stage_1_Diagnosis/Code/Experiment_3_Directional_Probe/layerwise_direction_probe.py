@@ -107,6 +107,17 @@ def main() -> None:
     parser.add_argument("--ckpt", type=str, default=None)
     parser.add_argument("--tag", type=str, default="baseline")
     parser.add_argument("--k-draws", type=int, default=K_DRAWS)
+    parser.add_argument(
+        "--timestep-frac", type=float, default=PROBE_TIMESTEP_FRAC,
+        help=(
+            "Fraction of T to probe at (default matches the original "
+            "single-timestep behavior, PROBE_TIMESTEP_FRAC=0.5 i.e. t=500). "
+            "Added for Stage 2 Tier 0 Item 1's methodology review -- confirms "
+            "or refutes whether a layer-wise magnitude/direction finding is "
+            "timestep-specific rather than assuming a single t=500 probe "
+            "generalizes. Does not change default behavior."
+        ),
+    )
     args = parser.parse_args()
 
     cfg = load_config()
@@ -123,13 +134,13 @@ def main() -> None:
     device = loaded.device
     n_classes = loaded.n_classes
     n_layers = len(model.blocks)
-    log.info(f"Model has {n_layers} TransformerBlocks. Probing at t={int(cfg.diffusion.T * PROBE_TIMESTEP_FRAC)}.")
+    log.info(f"Model has {n_layers} TransformerBlocks. Probing at t={int(cfg.diffusion.T * args.timestep_frac)}.")
 
     handles, captured = _register_layer_hooks(model)
 
     n_leads = 12
     seq_len = int(cfg.ptbxl.signal_length)
-    t_val = int(int(cfg.diffusion.T) * PROBE_TIMESTEP_FRAC)
+    t_val = int(int(cfg.diffusion.T) * args.timestep_frac)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     FIG_DIR.mkdir(parents=True, exist_ok=True)
