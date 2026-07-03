@@ -96,6 +96,19 @@ stable to the noise seed itself; the real source of spread in the
 headline numbers is cross-pair (which class is being compared to NORM),
 not cross-draw.
 
+**Limitation, stated explicitly so this isn't conflated later:** this
+design isolates *stochastic* (noise-seed) variance at fixed
+(class-pair, timestep), which is what the std columns above report. It
+does **not** capture *sample*-level variance — whether different real
+ECG examples belonging to the same class would show the same
+attenuation pattern, or whether it depends on which representative input
+was used. This probe never touches a real ECG signal (see above), so
+that question is simply out of scope for this measurement, not answered
+by it. A future variant that hooks real per-sample activations (rather
+than pure-noise `x_t`) would be needed to close this specific gap; not
+planned as part of Tier 0 unless a later item's results make it
+necessary.
+
 **Full table — all 90 magnitude values (5 pairs × 3 timesteps × 6
 blocks), mean ± std over the 20 within-pair noise-seed draws:**
 
@@ -167,9 +180,18 @@ ratio is smaller (i.e. a bigger drop) than transition X's ratio":
 | block1→2 vs block4→5 | +0.484 | 0.0 | 0.00003 | −3.57 |
 | block1→2 vs block5→6 | +0.192 | 8.0 | 0.00076 | −1.17 |
 
-**This refines, not just confirms, the earlier characterization.**
-block1→2 is significantly the largest single drop vs. every other
-transition (all p<0.001, large effect sizes). But the shape of what
+**This refines, not just confirms, the earlier characterization.** Under
+the current probe, at this checkpoint, block1→2 is significantly the
+largest single drop vs. every other transition (all p<0.001, large
+effect sizes) — that qualifier matters and is carried through the rest
+of this section deliberately: Item 9 (checkpoint-scale sweep, reusing
+exp2's six per-size checkpoints) is specifically designed to test
+whether this shape is a property of the architecture or a property of
+*this particular trained model*. Calling block1→2 "the bottleneck"
+outright would claim architecture-level generality that hasn't been
+earned yet; "the dominant observed attenuation point under the current
+probe, at this checkpoint" is the honest scope until Item 9 runs. But
+the shape of what
 happens *after* block 2 is more structured than "flat, then a diffuse
 second wave through 3–6," which is what I said in the first pass:
 block2→3 shows a smaller but real additional decrease (ratio 0.80),
@@ -305,23 +327,32 @@ independently-implemented replication.
   anywhere in this probe. The within-seed std reported is the model's
   sensitivity to the noise seed, not sample-to-sample biological
   variance.
-- **"Dominant transition" is now a statistical claim, not a description.**
-  Wilcoxon signed-rank test, n=15 paired observations, block1→2 vs. each
-  other transition: p≤0.0008 in every comparison, with block1→2 the
-  single largest-magnitude effect (d=−4.83 vs. block2→3, down to
-  d=−1.17 vs. the weaker but still real block5→6 drop).
+- **"Dominant transition" is now a statistical claim, not a description
+  — scoped to this checkpoint, under this probe.** Wilcoxon signed-rank
+  test, n=15 paired observations, block1→2 vs. each other transition:
+  p≤0.0008 in every comparison, with block1→2 the single
+  largest-magnitude effect (d=−4.83 vs. block2→3, down to d=−1.17 vs.
+  the weaker but still real block5→6 drop). Whether this generalizes
+  across checkpoints of different training scale is Item 9's question
+  (reusing exp2's six per-size checkpoints), not yet tested — "dominant"
+  here means "in this trained model," not "architecturally inevitable."
 - **Definition of magnitude: clarified** — mean-pooled hidden-state delta
   at each block's output, not the AdaLN modulation output (a distinct
   quantity Item 2 computes).
 
-What this now independently establishes, with statistical backing: (a)
-class-conditioning signal in this checkpoint is real and direction-stable
-at every layer, robust across 3 timesteps and 5 class pairs, with the
+What this now independently establishes, with statistical backing, **for
+this checkpoint under this probe** (scope qualifier deliberate — see
+above): (a) class-conditioning signal is real and direction-stable at
+every layer, robust across 3 timesteps and 5 class pairs, with the
 model's noise-seed sensitivity distinct from (much smaller than)
-cross-pair variance; (b) attenuation is concentrated at two specific,
-statistically confirmed transitions — block1→2 (dominant, large effect)
-and block5→6 (real but smaller effect, higher variance) — with blocks
-3→4→5 flat in between, not a smoothly distributed leak.
+cross-pair variance, though noise-seed variance is not the same thing as
+real-sample variance (limitation noted above); (b) attenuation is
+concentrated at two specific, statistically confirmed transitions —
+block1→2 (dominant, large effect) and block5→6 (real but smaller effect,
+higher variance) — with blocks 3→4→5 flat in between, not a smoothly
+distributed leak. Whether this two-drop shape is an architectural
+property or specific to this trained model is exactly Item 9's question,
+not yet answered.
 
 **Implication for Item 2 (LayerScale hypothesis) — revised given the
 now-tested two-drop shape.** A *purely* localized single-gain-at-block1→2
@@ -336,14 +367,85 @@ explicit spec:
 Logged as two separate ledger entries (not one entry with two folded-in
 conditions), same 5 class pairs / 3 timesteps / n≥20 draws methodology
 as this corrected Item 1 run, so results are directly comparable.
-**Falsification criteria to pre-register before running either** (per
-the reviewer's explicit requirement) will be written into Item 2's own
-section of this document before any run starts — not decided post-hoc.
-Whether Item 2 needs an actual gradient-descent retrain (to test a
-*learned* gain) or can be answered analytically from this checkpoint's
-already-saved activations (to test whether a gain *could* recover the
-lost magnitude) materially changes GPU cost and will be decided and
-stated explicitly before starting, not left ambiguous.
+
+## Item 2 — Pre-Registration (written before any code runs, per sign-off review)
+
+Both open items from the last review — falsification criteria and the
+analytical-vs-retrain decision — are resolved here, with real numbers,
+before Item 2 executes.
+
+### Analytical-vs-retrain: analytical first, decided and stated up front
+
+**Decision: run the analytical version first.** "Would a scalar gain
+recover the lost magnitude" is answerable directly from the frozen
+checkpoint's existing forward pass — hook each block's output (same
+hooks Item 1 already uses), multiply the relevant hidden-state delta by
+a candidate scalar gain `g` in-flight, and let the *unmodified, frozen*
+weights of the remaining blocks propagate the rescaled signal forward.
+No training, no gradient updates, no GPU cost beyond a few more forward
+passes (~10s, same order as Item 1). This measures whether a scale-only
+correction *could in principle* recover the magnitude and have it
+survive the rest of the network — if the direction is also degrading in
+a way a scale-only correction can't fix, or if the frozen downstream
+blocks simply re-attenuate the correction right back out, that rules out
+the entire LayerScale family (both variants) before any training budget
+is spent. **Only if the analytical check passes for at least one variant
+does Item 2 escalate to an actual gradient-descent retrain** (a real
+learnable gain integrated into the loss, to test whether the rest of the
+network can learn to exploit the corrected magnitude in ways a static
+post-hoc rescaling can't capture) — that retrain is a separate, later
+decision point, not committed to now.
+
+### Falsification criteria — concrete numbers, not placeholders
+
+Baseline values used below are the t=500, cross-pair-averaged numbers
+from Item 1's Results table: L1=0.1237, L2=0.0644 (block1→2 drop =
+0.0593). Both variants are checked against all 3 timesteps individually,
+not just t=500, matching Item 1's own methodology requirement.
+
+- **Localized-gain variant** (`stage2_tier0_item2_localized_gain`, one
+  scalar `g_L` applied to the block1→2 transition only): **CONFIRMED**
+  if there exists a `g_L` such that:
+  1. Recovers **≥70%** of the block1→2 magnitude drop: corrected L2
+     magnitude ≥ 0.0644 + 0.70×0.0593 = **0.1059** (≈ requires `g_L` ≳
+     1.64 at t=500; recomputed per-timestep using that timestep's own
+     L1/L2 values, not a single fixed number across timesteps).
+  2. Direction consistency at every downstream layer (2–6) stays **≥
+     0.989** — the floor already empirically established across all 90
+     Item 1 cells (the single lowest observed value was 0.98905, layer
+     6/t=900) — not degraded further by the intervention.
+  3. The correction **holds downstream**: at least 70% of the magnitude
+     recovered at block 2 is still present at block 6 (i.e. the frozen
+     blocks 3–6 don't simply re-attenuate the injected correction back
+     out) — otherwise a static per-transition gain isn't the right fix
+     even if it looks good locally at block 2.
+  If no `g_L` in a reasonable search range (grid over 1.0–3.0) satisfies
+  all three, the localized variant is **REJECTED**, not left ambiguous.
+
+- **Uniform-gain variant** (`stage2_tier0_item2_uniform_gain`, one
+  scalar `g_U` applied identically at every block): compared to the
+  localized variant under a **matched gain budget**, defined as equal
+  total squared log-gain: if the localized variant's passing (or
+  best-found) gain is `g_L*`, the uniform variant uses
+  `g_U = exp(ln(g_L*) / sqrt(6))` so that `6·(ln g_U)² = (ln g_L*)²` —
+  the same total "correction mass," distributed instead of concentrated.
+  **CONFIRMED** if it achieves the same ≥70% block1→2 recovery and ≥0.989
+  consistency floor as the localized variant, at comparable-or-better
+  downstream persistence (criterion 3 above), using this budget-matched
+  gain rather than an independently-tuned one (an independently-tuned
+  uniform gain would not be a fair comparison).
+
+- **Both fail** → an informative negative result for the LayerScale
+  family at the analytical (pre-training) stage, written up with the
+  same standard as the original CFG rejection in Stage 1 — a real
+  finding, not reframed as partial support.
+
+### Scope
+
+All of the above is scoped to **this checkpoint**, same as the rest of
+Item 1's findings — Item 9's checkpoint-scale sweep is what will show
+whether any Item 2 result generalizes across training scale or is
+specific to this one trained model.
 
 **Code provenance, closed per reviewer's option (a):** the probe script
 now exists in two places with distinct roles. The Stage 1 original
