@@ -7,8 +7,21 @@ venv/
 
 # Data & generated artifacts (large, regenerable from pipeline)
 data/
-outputs/
+/outputs/
 /logs/
+
+# Model checkpoints -- large binaries, regenerable, never tracked anywhere
+# in the repo (including under Roadmap/*/Outputs/, which IS otherwise
+# tracked -- CSVs/JSON metrics there are small, valuable, diffable research
+# record; the checkpoints they were computed from are not).
+*.pt
+*.pth
+*.ckpt
+
+# Archive tarballs used to move experiment results GPU <-> local -- never
+# committed; contents get extracted, and only the specific paths meant to
+# be tracked (see above) get git-added from there.
+*.tar.gz
 
 # OS
 .DS_Store
