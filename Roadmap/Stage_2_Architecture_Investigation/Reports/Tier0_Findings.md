@@ -368,12 +368,14 @@ Logged as two separate ledger entries (not one entry with two folded-in
 conditions), same 5 class pairs / 3 timesteps / n≥20 draws methodology
 as this corrected Item 1 run, so results are directly comparable.
 
-## Item 2 — Pre-Registration v2 (revised after a second review found the analytical design was unsound)
+## Item 2 — Pre-Registration v3 (final revision before implementation)
 
-The first pre-registration draft was reviewed before implementation (per
-the standing "no code until this is in writing" hold) and found to have
-two critical flaws and one evidentiary-standard gap. All three are fixed
-below by actually reading the model's source, not by assumption.
+Two prior drafts were reviewed before any code was written (per the
+standing "no code until this is in writing" hold). v1 had a fatal design
+flaw; v2 fixed it but left Δ's exact definition, the hook location, and
+several methodological choices in prose rather than precise, lockable
+form. v3 closes all of that. **No code has been implemented for Item 2
+as of this revision** — this remains pre-registration only.
 
 ### Correction to the reviewer's citation, checked directly
 
@@ -410,136 +412,235 @@ renormalized fresh**, exactly the mechanism the (unverified-provenance)
 quote described, but now confirmed from source rather than cited from a
 document this project has already flagged as unreliable.
 
-**Mathematical consequence, provable without running anything:**
-`LayerNorm(g·x) = LayerNorm(x)` **exactly**, for any positive scalar `g`
-applied uniformly to a token's full hidden-state vector — LN's mean/std
-normalization is invariant to uniform positive rescaling of its input.
-**This means the pre-registration v1 design (multiply the whole
-block-output tensor by a scalar `g`) is not just methodologically risky,
-it is analytically guaranteed to be a complete no-op** the instant it
-reaches the next block's `norm1` — zero downstream effect, not
-"attenuated," exactly zero. Running that version would have produced a
-false negative indistinguishable from "the LayerScale hypothesis is
-wrong," when it would actually have been "the intervention was erased by
-construction." Confirms the review's concern was correct and shows
-precisely why.
+**Mathematical consequence, provable without running anything —
+corrected wording (per review, the "exactly" claim was overstated):**
+standard LayerNorm computes `(x−μ)/√(σ²+ε)·γ+β`. Under `x → g·x`
+(`g>0`): `μ→gμ`, `σ²→g²σ²`, so the denominator becomes `√(g²σ²+ε)`, which
+equals `g·√(σ²+ε)` **only if `ε=0`**. So `LayerNorm(g·x) = LayerNorm(x)`
+holds **exactly in the `ε→0` limit**, and **to within numerical
+precision for realistic activation scales** — this model's LayerNorm
+uses PyTorch's default `ε=1e-5`, while the observed per-token hidden-state
+variances (implied by the L1–L6 magnitude norms already measured, all
+≫1e-5) make `g²σ²` dominate `ε` by several orders of magnitude, so the
+approximation error is negligible in practice but not literally zero.
+**This does not change the conclusion** — the v1 design (multiply the
+whole block-output tensor by a scalar `g`) is still a near-total no-op
+by the time it reaches the next block's `norm1`, for all practical
+purposes — but the claim is now stated as "holds to numerical precision
+given this model's activation scales," not "exactly," matching this
+project's standing rule against overstating certainty.
 
-### Corrected intervention design
+### 1. Hypothesis, made directly falsifiable
 
-A scalar multiply on the *whole* residual-stream vector is dead on
-arrival. What survives LN is a change to the vector's **shape/direction
-composition**, not its uniform scale — so the intervention must target
-the class-conditioning-specific *component* of the hidden state, not the
-whole tensor:
+Replacing the earlier loose framing ("LayerScale should help") with a
+precise, falsifiable statement:
 
-At the block1→2 transition, Item 1's own two forward passes per draw
-(`feat_a`, `feat_b`, at block 1's output) already give
-`delta = feat_b - feat_a` — the class-conditioning direction. The
-intervention constructs `feat_b_corrected = feat_a + g·delta` (amplifying
-only the conditioning-specific component, leaving the class-A reference
-untouched) and **feeds this corrected tensor into block 2 in place of
-the original `feat_b`**, implemented as a forward hook that returns a
-replacement tensor (PyTorch forward hooks may substitute the module's
-output for the rest of the forward pass) — no offline recomputation,
-the actual computation graph is modified live, then blocks 2–6 run
-unmodified (frozen weights) on the corrected input. This is still
-purely analytical (no gradients, no training) but is no longer
-guaranteed-vacuous the way a uniform scalar multiply is.
+> **If the dominant attenuation observed under the current probe, at
+> this checkpoint, primarily reflects magnitude loss rather than
+> directional degradation, then selectively amplifying the
+> conditioning delta immediately after the dominant attenuation point
+> (block1→2) should recover Block 6 conditioning magnitude while
+> preserving direction consistency ≥0.989.**
 
-**Uniform variant applies the same delta-amplification at every
-block's transition** (not just block1→2): at each block k=1..5, hook its
-output, compute that block's own `delta_k = feat_b_k - feat_a_k`,
-construct `feat_a_k + g_k·delta_k`, and feed the corrected tensor into
-block k+1 — a cumulative live intervention through the whole forward
-pass, with `g_k` chosen per the budget-matching scheme below.
+This is falsifiable: if amplifying the delta at the injection point
+fails to move block 6's magnitude (propagation efficiency near zero,
+see below), or moves it only by degrading direction consistency below
+the established floor, the hypothesis is rejected, not reinterpreted.
 
-### Recovery measured at block 6, not the injection point (Critical Issue 2 — fixed)
+### 2. Δ — exact mathematical definition
 
-**Recovery is defined and measured entirely at the final block (block
-6)'s output, after propagating through the frozen, unmodified blocks
-3–6.** Measuring at the injection point (block 2, immediately after
-substitution) would be close to tautological — the gain is chosen to
-produce exactly that change, by construction, and would say nothing
-about whether it survives. The only meaningful question is whether
-block 6's magnitude/direction-consistency, computed from the
-gain-corrected forward pass, differs from the same quantities computed
-from the uncorrected baseline forward pass.
+Using Item 1's own notation, unchanged, for continuity with what Item 1
+actually measured (not switched to a CFG-style null-token delta, which
+would be a different quantity than the one Item 1 characterized):
 
-### Falsification criteria — restated on pooled statistics, matching Item 1's own evidentiary bar (Major Issue 3 — fixed)
+For a fixed (class-pair, timestep, draw `i`), let `H_k^A(i)` and
+`H_k^B(i)` denote the **full per-token hidden-state tensor** returned by
+`TransformerBlock` `k`'s `forward()` (shape `(1, 600, model_dim)` —
+the same tensor Item 1's hook captures at L177 of
+`step04_transformer_diffusion.py`, before any mean-pooling) for class
+A=0 (NORM) and class B respectively, same noise `x_t` and timestep,
+identical to Item 1's paired-forward-pass design.
 
-The v1 draft used a single (pair=0→1, t=500) number. Item 1 itself was
-rightly held to a 5-pair × 3-timestep pooled standard before being
-accepted as SUPPORTED — Item 2 is held to the same bar, not a lower one.
-**Pooled (n=15 = 5 pairs × 3 timesteps) statistics, computed directly
-from Item 1's own raw data:** L1 mean = 0.1346 ± 0.0342, L2 mean =
-0.0712 ± 0.0188, block1→2 drop = 0.0635 ± 0.0204.
+```
+Δ_k(i) = H_k^B(i) − H_k^A(i)                    (per-token, shape (1,600,D), NOT mean-pooled)
+H_k^B'(i, g) = H_k^A(i) + g · Δ_k(i)             (the corrected substitute for H_k^B(i))
+```
 
-- **Localized-gain variant** (`stage2_tier0_item2_localized_gain`):
-  **CONFIRMED** if there exists a `g_L` such that, evaluated at **block
-  6**, pooled across all 5 pairs × 3 timesteps:
-  1. Block 6 magnitude in the gain-corrected forward pass recovers
-     **≥70%** of the pooled block1→2 drop relative to the uncorrected
-     block 6 baseline — i.e. `mag6_corrected − mag6_baseline ≥
-     0.70 × 0.0635 = 0.0445` (pooled mean; evaluated per-pair-per-timestep,
-     not a single fixed number, exactly as Item 1's own tables report
-     per-condition detail alongside the pooled figure).
-  2. Direction consistency at every downstream layer (2–6) in the
-     corrected pass stays **≥0.989** — Item 1's own empirically observed
-     floor across all 90 cells (lowest value: 0.98905, layer 6/t=900) —
-     not degraded further by the intervention.
-  3. This is checked at block 6 specifically **because** it already
-     encodes "survives the frozen downstream blocks" — there is no
-     separate "holds downstream" criterion needed once recovery is
-     defined at the final block rather than the injection point (this
-     simplifies, and corrects, the v1 draft's redundant criterion 3).
-  If no `g_L` in a reasonable search range (grid over 1.0–4.0, since the
-  effective range needed may differ now that the intervention targets
-  the delta rather than the whole vector) satisfies both 1 and 2 across
-  the pooled conditions, the localized variant is **REJECTED**.
+This is the **full per-token tensor**, not the mean-pooled vector Item
+1 uses for its magnitude/consistency metrics — the substitution must
+operate on the real tensor block `k+1` consumes, since block `k+1`'s
+`forward()` takes the full `(1, 600, D)` sequence, not a pooled
+summary. Mean-pooling is applied only afterward, when computing the
+magnitude/direction-consistency metrics at block 6 (exactly as Item 1
+already does), never to construct the substitute itself.
 
-- **Uniform-gain variant** (`stage2_tier0_item2_uniform_gain`): compared
-  under a **matched gain budget** — equal total squared log-gain, i.e.
-  if the localized variant's passing (or best-found) gain is `g_L*`, the
-  uniform variant applies `g_k = exp(ln(g_L*)/√5)` at each of the 5
-  transitions (`5·(ln g_k)² = (ln g_L*)²`), same total "correction mass"
-  distributed instead of concentrated. **CONFIRMED** if it achieves the
-  same ≥70% pooled recovery and ≥0.989 consistency floor at block 6.
-  **Stated limitation, not hidden as a neutral choice (per reviewer's
-  minor note):** this equal-per-block split is fixed by construction,
-  not fit or optimized — it necessarily spends some of the budget on
-  transitions (block3→4, block4→5) that Item 1 found no significant
-  effect at, which structurally disadvantages the uniform variant
-  relative to a version that could concentrate its budget on the two
-  transitions Item 1 *did* find significant (block1→2, block5→6). This
-  bias is acknowledged up front, not discovered after the uniform
-  variant underperforms.
+### 3. Hook location — exact module, exact tensor
 
-- **Both fail** → an informative negative result for the LayerScale
-  family at the analytical (pre-training) stage, written up with the
-  same standard as the original CFG rejection in Stage 1 — a real
-  finding, not reframed as partial support.
+- **Module hooked:** `model.blocks[k]` for `k ∈ {0}` (0-indexed; block
+  1 in Item 1's 1-indexed reporting) for the localized variant, and
+  `k ∈ {0,1,2,3,4}` (blocks 1–5) for the uniform variant — the same
+  `TransformerBlock` instances Item 1's probe already hooks via
+  `register_forward_hook`.
+- **Tensor received by the hook:** the module's real return value,
+  `x` at `step04_transformer_diffusion.py:177` — post both residual
+  adds, the actual residual-stream tensor handed to block `k+1`.
+- **Tensor the hook returns (substitutes):** during the class-B forward
+  pass only (the class-A pass is never modified — it remains the
+  unperturbed reference, exactly as in Item 1), once `H_k^A(i)` has
+  already been captured (class-A pass always runs first, per the
+  existing probe script's pass ordering), the hook computes
+  `Δ_k(i) = H_k^B(i) − H_k^A(i)` from the just-computed raw output and
+  **returns `H_k^A(i) + g·Δ_k(i)`** in its place. PyTorch forward hooks
+  may return a replacement tensor that is used for all downstream
+  computation within the same `model()` call — this is a live
+  substitution into the running forward pass, not an offline
+  recomputation.
+- **Why this survives the following LayerNorm:** unlike a uniform
+  scalar multiply of the whole vector (§ above), `H_k^A(i) + g·Δ_k(i)`
+  is **not** a positive rescaling of `H_k^B(i)` — it changes the
+  vector's direction/composition relative to `H_k^A(i)`, which
+  LayerNorm's mean/std normalization does not cancel out (LN
+  normalizes based on the full vector's own mean/std, which shifts
+  non-trivially under this substitution, unlike under uniform scaling).
+  This is asserted from the substitution's algebraic form, not
+  re-derived numerically here — the identity-gain regression test in
+  §6 is the empirical check that the hook mechanism itself behaves as
+  specified before any non-trivial `g` is tested.
 
-- **70% threshold provenance, stated plainly (per reviewer's minor
-  note):** this is a round-number judgment call, not derived from a
-  power analysis or prior LayerScale/DiT literature specific to this
-  architecture. Flagging this honestly rather than presenting it as if
-  it were derived, consistent with this project's standing discipline.
+Computation graph for the localized variant (`k=1` only):
 
-### Analytical-vs-retrain: analytical first, decided and stated up front
+```
+block1(x_t, y=A) → H_1^A(i)  [cached, unmodified reference]
+block1(x_t, y=B) → H_1^B(i)  [raw] → hook replaces with H_1^A(i)+g·Δ_1(i) → fed into block2
+block2..block6 run FROZEN, unmodified weights, on the corrected input
+→ H_6^B'(i,g) captured at block 6, mean-pooled, compared to baseline H_6^B(i)
+```
 
-**Decision unchanged from v1: run the analytical (hook-substitution)
-version first**, now correctly designed per the above. No training, no
-gradient updates — a few extra forward passes per (pair, timestep, gain
-value) grid point, same order of cost as Item 1 (~seconds, not GPU
-training time). If the analytical check shows the delta-amplification
-can't reach the recovery target while respecting the consistency floor
-at block 6, that rules out the entire LayerScale family (both variants)
-before any training budget is spent. **Only if the analytical check
-passes for at least one variant does Item 2 escalate to an actual
-gradient-descent retrain** (a real learnable gain integrated into the
-loss, to test whether the rest of the network can learn to exploit the
-corrected magnitude in ways a static post-hoc substitution can't capture)
-— that retrain is a separate, later decision point, not committed to now.
+Uniform variant repeats this substitution at each of blocks 1–5,
+cumulatively: block `k+1`'s hook computes `Δ_{k+1}` between whatever
+tensor actually arrives (the already-corrected class-B trajectory from
+block `k`) and the never-modified class-A reference `H_{k+1}^A(i)` at
+that same layer.
+
+### 4. Recovery measured at block 6 only (unchanged from v2, restated precisely)
+
+`RecoveredMagnitude(g) = mag6_corrected(g) − mag6_baseline`, where both
+quantities are Item 1's own magnitude metric (normalized L2 norm of the
+mean-pooled class delta) computed at block 6 — `mag6_corrected(g)` from
+the gain-corrected forward pass, `mag6_baseline` from the never-modified
+baseline pass. Never measured at the injection point.
+
+### 5. Propagation efficiency — distinguishes "survives" from "re-absorbed"
+
+```
+InjectedDelta(g)        = (g − 1) · ||Δ_k(i)||            (magnitude actually injected at the intervention point, mean-pooled, Item 1 units)
+PropagationEfficiency(g) = RecoveredMagnitude(g) / InjectedDelta(g)
+```
+
+`PropagationEfficiency ≈ 1` means the injected correction survives to
+block 6 essentially undiminished; `≈ 0` means the frozen downstream
+blocks re-absorb it almost entirely (a distinct failure mode from
+"the correction never had an effect at all," and the one this metric
+is specifically designed to surface). Reported alongside recovery
+fraction and direction consistency at every grid point, not folded
+into a single pass/fail number.
+
+### 6. Identity-gain regression test — mandatory, run before any real `g`
+
+Before evaluating any `g ≠ 1`, run the complete hook-substitution
+pipeline with `g = 1` (i.e. `H_k^B'(i,1) = H_k^A(i) + Δ_k(i) = H_k^B(i)`
+exactly, algebraically) and confirm the resulting block 6 output is
+numerically identical (to floating-point tolerance) to the unmodified
+baseline forward pass — same magnitude, same direction-consistency,
+same underlying tensor. **If this check fails, abort Item 2 entirely
+and debug the hook mechanism before any further step** — a `g=1`
+mismatch means the substitution pathway itself has a bug, and every
+downstream number would be contaminated by it, exactly the discipline
+already applied to the `--timestep-frac` regression test in Item 1.
+
+### 7. Gain strategy — swept grid, fixed before implementation, not chosen post-hoc
+
+**Option A (sweep), selected:** `g ∈ {1.0, 1.25, 1.5, 2.0, 3.0, 5.0}`,
+run at every (pair, timestep) combination, producing a full
+recovery-vs-gain and propagation-efficiency-vs-gain curve rather than a
+single solved value. Chosen over directly solving for the threshold-
+hitting `g` (Option B) because the curve itself is diagnostic — it
+distinguishes "recovery saturates below 70% no matter how large `g`
+gets" (architectural ceiling) from "recovery crosses 70% at some `g`
+but direction consistency fails first" (a real tradeoff) from "recovery
+crosses 70% cleanly." **This grid is locked now and will not be revised
+after seeing results** — if `g=5.0` turns out insufficient, that is
+itself the finding (localized/uniform variant rejected at this budget),
+not a cue to extend the grid.
+
+### 8. Uniform-baseline purpose, stated explicitly (not left implicit)
+
+The equal-per-block gain split (§ budget-matching, unchanged from v2)
+is **not** intended to find the best-performing intervention — it is
+already acknowledged as structurally disadvantaged, since it spends
+budget on transitions (block3→4, block4→5) Item 1 found no significant
+effect at. Its purpose is narrower and explicit: **testing whether
+localization itself matters** — i.e., whether concentrating a fixed
+correction budget at the one transition Item 1 identified as dominant
+outperforms spreading the same budget uniformly, not finding the
+globally optimal gain allocation (which would require a separate,
+unconstrained search, not in scope for Item 2).
+
+### 9. Falsification criteria — four-way decision table, pre-registered, no post-hoc reinterpretation
+
+Pooled (n=15 = 5 pairs × 3 timesteps) baseline statistics, computed
+directly from Item 1's own raw data: L1 mean = 0.1346 ± 0.0342, L2 mean
+= 0.0712 ± 0.0188, block1→2 drop = 0.0635 ± 0.0204. Recovery fraction =
+`RecoveredMagnitude(g) / 0.0635` at whichever `g` in the locked grid
+(§7) produces the largest recovery without violating the direction
+floor; direction consistency = minimum value observed across layers
+2–6 in the corrected pass, at that same `g`.
+
+| Recovery fraction | Direction consistency | Interpretation |
+|---|---|---|
+| ≥70% | ≥0.989 | Hypothesis **SUPPORTED** |
+| 30–70% | ≥0.989 | **Partial support** — real but incomplete recovery |
+| <30% | ≥0.989 | Hypothesis **REJECTED** |
+| any recovery | <0.989 | Magnitude recovered **at the expense of conditioning integrity** — not a pass, regardless of recovery fraction |
+
+No additional interpretations are introduced after results are
+observed — this table is the complete decision procedure for both
+variants. **70% threshold provenance, stated plainly:** this is an
+engineering judgment call, not derived from a power analysis or prior
+LayerScale/DiT literature specific to this architecture — flagged
+honestly rather than presented as derived.
+
+**Uniform variant** is evaluated against the same table, using the
+budget-matched gain from §8 (not an independently-tuned gain).
+
+**Both variants land in "REJECTED" or "magnitude-at-expense-of-integrity"**
+→ an informative negative result for the LayerScale family at the
+analytical (pre-training) stage, written up with the same standard as
+the original CFG rejection in Stage 1 — a real finding, not reframed as
+partial support.
+
+### 10. Analytical-vs-retrain: analytical first, decided and stated up front (unchanged)
+
+**Decision: run the analytical (hook-substitution) version first**, per
+the precise design above. No training, no gradient updates — a few
+extra forward passes per (pair, timestep, gain) grid point, same order
+of cost as Item 1 (~seconds). If the analytical check lands every
+variant in REJECTED or magnitude-at-expense-of-integrity, that rules out
+the entire LayerScale family before any training budget is spent.
+**Only if at least one variant reaches SUPPORTED or partial support does
+Item 2 escalate to an actual gradient-descent retrain** (a real
+learnable gain integrated into the loss, testing whether the network
+can learn to exploit the corrected magnitude in ways a static
+substitution can't capture) — that retrain is a separate, later decision
+point, not committed to now.
+
+### Lock
+
+**This pre-registration is frozen as of this revision.** No further
+methodological changes are permitted once implementation begins — a
+change discovered necessary mid-implementation becomes Item 2b or an
+explicit "Item 2 Revision" section, not a silent edit to the criteria
+above.
 
 ### Scope
 
