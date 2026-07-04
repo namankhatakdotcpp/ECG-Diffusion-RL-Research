@@ -1,0 +1,1 @@
+Stage 3 -- Architecture Improvements. Start at `Stage3_Roadmap.md` (plan) and `Stage3_Status.md` (current status/verdicts). Not addressed by the last directive's 4 named stubs, but left empty inconsistently with those otherwise -- filled in here for the same reason.

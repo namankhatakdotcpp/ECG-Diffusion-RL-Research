@@ -1,0 +1,1 @@
+Not yet needed as a separate file -- decisions made so far (Decision Gate A's outcome, threshold locks) are documented in `Stage3_Phase0_Report.md` and `Stage3_Status.md`. Revisit if a decision log distinct from those two accumulates enough content to warrant its own file.
