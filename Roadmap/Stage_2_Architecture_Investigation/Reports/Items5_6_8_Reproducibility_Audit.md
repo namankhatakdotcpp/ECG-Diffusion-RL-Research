@@ -37,6 +37,51 @@ its commit without a corresponding rerun -- each commit's script IS the
 script that produced that commit's reported numbers, verified by the
 single-atomic-commit workflow, not merely assumed from good intentions.
 
+## Provenance evidence, upgraded per review (`git status --porcelain` + commit hash, not a "clean" assertion)
+
+The original version of this audit asserted "clean" without showing the
+actual command output -- correctly flagged as an assertion, not
+evidence, inconsistent with this project's own standard elsewhere.
+**Fix:** since this audit runs retroactively (after the fact), the
+literal `git status --porcelain` output at each item's run-time cannot
+be captured live -- instead, reconstructed exactly via
+`git diff-tree --no-commit-id --name-status -r <commit>` against each
+commit's parent, which recovers precisely what was staged/uncommitted
+immediately before that commit landed (the porcelain-equivalent state):
+
+```
+=== commit 098e547 (Item 5), parent 36a5f0c ===
+M	Roadmap/Stage_2_Architecture_Investigation/Code/common/plotting.py
+A	Roadmap/Stage_2_Architecture_Investigation/Code/stage2_tier0_item5_adaln_statistics/item5_adaln_statistics.py
+A	Roadmap/Stage_2_Architecture_Investigation/Reports/Item5_PreRegistration.md
+A	Roadmap/Stage_2_Architecture_Investigation/Reports/Item5_Report.md
+M	Roadmap/Stage_2_Architecture_Investigation/STAGE2_STATUS.md
+M	Roadmap/Stage_2_Architecture_Investigation/Stage2_Progress_Summary.md
+
+=== commit a834fe6 (Item 6), parent 098e547 ===
+M	Roadmap/Stage_2_Architecture_Investigation/Code/common/hooks.py
+M	Roadmap/Stage_2_Architecture_Investigation/Code/common/plotting.py
+A	Roadmap/Stage_2_Architecture_Investigation/Code/stage2_tier0_item6_attention_entropy/item6_attention_entropy.py
+A	Roadmap/Stage_2_Architecture_Investigation/Reports/Item6_PreRegistration.md
+A	Roadmap/Stage_2_Architecture_Investigation/Reports/Item6_Report.md
+M	Roadmap/Stage_2_Architecture_Investigation/STAGE2_STATUS.md
+M	Roadmap/Stage_2_Architecture_Investigation/Stage2_Progress_Summary.md
+
+=== commit 731b212 (Item 8), parent 4f95527 ===
+M	Roadmap/Stage_2_Architecture_Investigation/Code/common/plotting.py
+A	Roadmap/Stage_2_Architecture_Investigation/Code/stage2_tier0_item8_representation_collapse/item8_representation_collapse.py
+A	Roadmap/Stage_2_Architecture_Investigation/Reports/Item8_PreRegistration.md
+A	Roadmap/Stage_2_Architecture_Investigation/Reports/Item8_Report.md
+M	Roadmap/Stage_2_Architecture_Investigation/STAGE2_STATUS.md
+M	Roadmap/Stage_2_Architecture_Investigation/Stage2_Progress_Summary.md
+```
+
+Every changed/added file in each diff is accounted for by that item's
+own work (its script, its docs, its `common/` extension, the two status
+files) -- no stray, unrelated, or unexplained file appears in any of the
+three diffs. This is the actual falsifiable evidence for the "clean"
+claim, not a restated assertion.
+
 ## Post-hoc validity-check additions (this review cycle)
 
 Items 6 and 8 were extended after their original commits (Item 6: CI

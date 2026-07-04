@@ -239,6 +239,14 @@ runtime was measured (this is the same class of amendment as Item 6's
 post-hoc CI computation: improving the precision of an already-locked
 measurement, not changing what is being measured).
 
+**Secondary (fixed-timestep) design sample size, stated explicitly per
+review request:** confirmed by direct code read
+(`item4_gradient_probe.py:217,235`) -- the secondary design's per-
+timestep loop (`t in {100, 500, 900}`) uses the SAME `N_DRAWS=30` as the
+primary design, not a smaller count. No adjustment was needed; this was
+already true before the amendment and remains true after it. Both
+designs carry equal sample-size precision.
+
 ## Report structure
 
 Architectural question first ("was the class embedding's gradient

@@ -249,7 +249,10 @@ def main() -> None:
 
     checksum_after = state_dict_checksum(model)
     weights_unchanged = (checksum_before == checksum_after)
-    log.info(f"Weight-checksum check: {'PASS (unchanged)' if weights_unchanged else 'FAIL (CHANGED!)'}")
+    log.info(f"Weight-checksum check: {'PASS (unchanged)' if weights_unchanged else 'FAIL (CHANGED!)'} "
+             f"| hash_function=sha256 | object_hashed=state_dict (sorted (name, tensor.cpu().numpy().tobytes()) "
+             f"pairs from model.named_parameters(), per state_dict_checksum()) "
+             f"| before={checksum_before} | after={checksum_after} | equal={weights_unchanged}")
     if not weights_unchanged:
         print("[STOP] Weight-checksum check FAILED -- model weights changed during the sweep. "
               "This indicates an accidental optimizer.step() or in-place mutation. "
@@ -265,6 +268,13 @@ def main() -> None:
     other_means = sorted(v for k, v in pooled_mean.items() if k != "class_emb.weight")
     rank = sum(1 for v in other_means if v < class_emb_mean)
     percentile_rank = 100.0 * rank / len(other_means)
+    # Explicit confirmation this run's percentile rank was computed fresh from THIS run's
+    # N_DRAWS draws, not cached from any prior run -- there is no caching mechanism in this
+    # script (pooled_mean is always freshly built from primary_grad_norms, populated by the
+    # loop that just executed above), but this line makes that fact checkable in the log/JSON
+    # rather than only inferable from reading the code.
+    log.info(f"other_means recomputed fresh from this run: n={len(other_means)} values, "
+             f"from N_DRAWS={N_DRAWS} draws just collected above (no caching in this script).")
 
     bucket_summary = {}
     for name, mean_val in pooled_mean.items():
@@ -312,9 +322,13 @@ def main() -> None:
         "cuda_version": torch.version.cuda if device == "cuda" else None,
         "cuda_total_memory_gb": (torch.cuda.get_device_properties(0).total_memory / 1e9
                                   if device == "cuda" else None),
+        "checksum_hash_function": "sha256",
+        "checksum_object_hashed": ("state_dict: sorted (name, tensor.detach().cpu().numpy().tobytes()) "
+                                    "pairs from model.named_parameters(), per state_dict_checksum()"),
         "checksum_before": checksum_before,
         "checksum_after": checksum_after,
         "weights_unchanged": weights_unchanged,
+        "n_other_means_recomputed_this_run": len(other_means),
         "reproducibility_check_passed": repro_match,
         "reproducibility_max_abs_diff": repro_max_diff,
         "reproducibility_max_abs_diff_tensor": repro_max_diff_name,
