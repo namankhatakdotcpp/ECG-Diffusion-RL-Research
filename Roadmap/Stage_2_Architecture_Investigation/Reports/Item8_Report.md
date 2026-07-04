@@ -53,6 +53,45 @@ ratio/linear probe need multiple classes at once).
   a modest held-out set," not as an asymptotically precise estimate;
   stated as a limitation below, not hidden.
 
+## Statistical validity check (added after review -- must-fix, not editorial)
+
+A 100% accuracy claim deserves the same suspicion as a printed PASS
+string. Reviewer flagged a specific, concrete risk the original
+verification pass missed: **`n_train=84` and raw hidden dimension
+`d=256` -- `n_train <= d` at literally every one of the 18 cells**
+(confirmed explicitly, not assumed). A linear classifier can achieve
+100% TRAIN accuracy by construction whenever `n_train` is on the order
+of `d`, regardless of whether classes are separable at all (VC
+dimension of a linear separator in `d` dimensions is `d+1`). Confusion
+matrices/macro-F1/balanced accuracy (an alternative check considered)
+would NOT have caught this -- they are monotonic functions of the same
+already-perfect confusion matrix and carry no additional information
+at 100% accuracy. Three checks were run instead:
+
+1. **n vs. d, reported explicitly:** `n_train=84 <= d=256` at every
+   cell -- confirmed as a real, universal condition, not a corner case.
+2. **Multiple random train/test splits (n=3, not just the one default
+   seed):** accuracy was `[1.0, 1.0, 1.0]` at every cell, range=0.0 --
+   the 100% result is not a single lucky partition.
+3. **Label-permutation control (the decisive check):** shuffle the true
+   labels, refit the IDENTICAL probe (same PCA-reduction logic, same
+   code path), report train AND test accuracy on the nonsense labels.
+   **Result: shuffled-label test accuracy stayed near chance (range
+   0.083-0.278, chance=0.167) at every cell, and -- critically --
+   shuffled-label TRAIN accuracy stayed at only ~0.40-0.57, nowhere
+   near 1.0.** This is the direct evidence against memorization: if the
+   post-PCA-reduced classifier had enough effective capacity to fit any
+   arbitrary labeling (the actual risk the n<=d condition raises), it
+   would ALSO hit ~100% train accuracy on shuffled labels. It does not.
+   The true-label 100% train+test accuracy reflects genuine linearly-
+   exploitable class structure, not a dimensionality artifact.
+
+**Conclusion: the finding survives the validity check.** The naive
+n-vs-d concern is real and worth having checked, but the permutation
+control directly rules out the failure mode it predicts. This
+strengthens confidence in the original claim rather than requiring a
+downgrade -- stated as an outcome, not assumed in advance.
+
 ## Results (abbreviated -- full table in `representation_collapse.csv`)
 
 | Timestep | Block 1 Fisher | Block 6 Fisher | Block 1-6 probe accuracy |

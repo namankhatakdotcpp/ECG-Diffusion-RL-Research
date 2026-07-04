@@ -80,11 +80,16 @@ adjustment.
   this is a correlation between two independently-measured quantities
   (Item 1's forward-pass cross-class delta magnitude; Item 5's static
   weight-capacity allocation) -- it is not evidence that one causes
-  the other**, and no causal mechanism is asserted here. It is,
-  however, exactly the kind of convergent signal from independent
-  measurement types (Item 5's weights, Item 1's activations) that
-  strengthens confidence the block1->2 and block5->6 transitions are
-  architecturally distinguished, not noise.
+  the other**, and no causal mechanism is asserted here. **This is
+  observational correlation only. No intervention was performed** --
+  unlike Item 2's gain-substitution experiments, nothing was manipulated
+  here to test whether changing scale/shift allocation would change
+  Item 1's magnitude-decay pattern; both quantities were simply measured
+  independently on the same frozen checkpoint. It is, however, exactly
+  the kind of convergent signal from independent measurement types
+  (Item 5's weights, Item 1's activations) that strengthens confidence
+  the block1->2 and block5->6 transitions are architecturally
+  distinguished, not noise.
 - **Item 4** (gradient competitiveness): found `adaLN` parameters
   receive the largest mean gradient norm of any parameter-type bucket
   (~0.013, ~6x `class_emb.weight`'s mean). Item 5 does not directly

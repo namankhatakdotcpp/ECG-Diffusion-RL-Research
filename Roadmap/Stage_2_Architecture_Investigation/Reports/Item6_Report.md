@@ -2,14 +2,25 @@
 
 ## Executive Summary
 
-**Overall VERIFIED** (pooled mean entropy diff 0.03519 < 0.05 threshold)
--- attention is largely class-blind, consistent with the master
-prompt's own interpretation ("argues against cross-attention being
-sufficient by itself"). **But the pooled average masks a real, worth-
-flagging pattern: blocks 5 and 6 individually exceed the 0.05 threshold**
-(0.0643 and 0.0547) while blocks 1-4 are all comfortably below it
-(0.016-0.031) -- late blocks are measurably less class-blind than early/
-middle blocks, even though the network-wide average clears the bar.
+**Late transformer blocks exhibit measurably higher class-dependence
+than early/middle blocks, despite the network-wide average remaining
+below the predefined class-blindness threshold.** Blocks 5 and 6's
+point estimates (0.0643, 0.0547) exceed the locked 0.05 threshold,
+while blocks 1-4 are all comfortably below it (0.016-0.031) -- a clean
+separation in point estimates. **Updated after computing confidence
+intervals across the 15 pooled pair x timestep cells (not done in the
+original draft of this report): the separation is real in direction,
+but blocks 5/6's exceedance of the specific 0.05 threshold is NOT
+statistically airtight** -- both blocks' 95% CIs cross 0.05 (block 5:
+[0.0396, 0.0890]; block 6: [0.0417, 0.0676]), while blocks 1-4's CIs sit
+entirely below it (upper bounds 0.027-0.040, no overlap with 0.05).
+**Correct reading: blocks 5-6 are measurably, qualitatively less
+class-blind than blocks 1-4 (the point-estimate separation is real and
+the CIs don't overlap each other's typical range), but whether blocks
+5/6 individually "exceed the 0.05 threshold" specifically is uncertain
+given cell-to-cell variance -- stated with the correct amount of
+confidence, not overclaimed.** The overall network-wide verdict
+(VERIFIED, pooled mean 0.0352 < 0.05) is unaffected by this correction.
 
 ## Methodology
 
@@ -45,17 +56,27 @@ mode (no dropout).
 
 ## Results
 
-| Block | H(class A, NORM) | H(class B, pooled over MI/STTC/CD/HYP/OTHER) | \|diff\| |
-|---|---|---|---|
-| 1 | 5.8252 | 5.8070 | 0.0182 |
-| 2 | 5.7161 | 5.6847 | 0.0314 |
-| 3 | 5.5864 | 5.5604 | 0.0259 |
-| 4 | 5.6057 | 5.5891 | 0.0166 |
-| 5 | 4.4262 | 4.3619 | **0.0643** |
-| 6 | 3.3365 | 3.2818 | **0.0547** |
+| Block | H(class A, NORM) | H(class B, pooled over MI/STTC/CD/HYP/OTHER) | \|diff\| (point est.) | 95% CI (across 15 cells) |
+|---|---|---|---|---|
+| 1 | 5.8252 | 5.8070 | 0.0182 | [0.0140, 0.0278] |
+| 2 | 5.7161 | 5.6847 | 0.0314 | [0.0230, 0.0398] |
+| 3 | 5.5864 | 5.5604 | 0.0259 | [0.0130, 0.0388] |
+| 4 | 5.6057 | 5.5891 | 0.0166 | [0.0084, 0.0269] |
+| 5 | 4.4262 | 4.3619 | **0.0643** | [0.0396, 0.0890] -- crosses 0.05 |
+| 6 | 3.3365 | 3.2818 | **0.0547** | [0.0417, 0.0676] -- crosses 0.05 |
+
+95% CIs computed as `mean +/- 1.96*SE` across the n=15 pooled
+(pair, timestep) cells per block (the same n=15 evidentiary unit Item
+1 used for its own pooled statistics). **Blocks 1-4's CIs sit entirely
+below the 0.05 threshold with no overlap; blocks 5-6's point estimates
+exceed it but their CIs include sub-threshold values** -- the
+"exceeds 0.05" claim for blocks 5/6 specifically is directionally
+suggestive, not statistically confirmed at conventional confidence.
 
 Pooled mean |diff| across all 6 blocks: **0.03519** (< 0.05 threshold
--> VERIFIED, class-blind, per the locked criterion).
+-> VERIFIED, class-blind, per the locked criterion) -- this network-
+wide verdict does not depend on the blocks-5/6 CI question above and
+is unaffected by it.
 
 **Entropy itself declines steadily from block 1 (~5.83, close to the
 6.91 theoretical max -- broad, near-uniform attention) to block 6
@@ -74,9 +95,13 @@ individually cross the 0.05 threshold, meaning the *late* blocks'
 attention pattern is measurably (if still small in absolute terms
 relative to the ~6.9 max) more class-dependent than the early/middle
 blocks'. This should not be smoothed over by reporting only the pooled
-number -- it is a real, per-block pattern, not noise (the pattern is
-monotonic: blocks 1-4 all below 0.032, blocks 5-6 both above 0.054, a
-clean separation, not a single outlier draw).
+number -- it is a real, per-block pattern in point estimates (blocks
+1-4 all below 0.032, blocks 5-6 both above 0.054, a clean separation
+across the six point estimates). **However, per the CI computation
+above, the specific claim that blocks 5/6 "exceed the 0.05 threshold"
+should be read as directionally suggestive, not statistically
+confirmed** -- their confidence intervals, computed across the same
+15 pooled cells, include values below 0.05.
 
 ## Cross-validation (Phase H)
 
@@ -99,11 +124,13 @@ flag blocks 5/6 as architecturally distinctive:
 convergent correlation across four independently-measured quantities
 (forward-pass activation delta, within-pass residual magnitude, static
 weight capacity, attention entropy), not proof of a single causal
-mechanism.** But four different measurement types agreeing that blocks
-5-6 are where something architecturally different happens is a
-stronger signal than any one of them alone, and is exactly the kind of
-convergent evidence worth foregrounding in the eventual Stage 2
-Decision Report's synthesis section.
+mechanism** -- and Item 6's own contribution to that convergence carries
+the CI caveat above (point-estimate separation is real; the specific
+0.05-threshold crossing is not statistically airtight). Four different
+measurement types agreeing on DIRECTION (blocks 5-6 stand out) is still
+a stronger signal than any one alone, but the reader should weight
+Item 6's contribution accordingly -- as "directionally consistent,"
+not as an independently-confirmed threshold breach.
 
 ## Limitations
 
@@ -111,16 +138,25 @@ Entropy differences, even at blocks 5/6, are small in absolute terms
 (0.05-0.06 out of a ~6.9 max scale, ~0.8-0.9%) -- "measurably different"
 is not "large." The pooled network-wide verdict (class-blind) is not
 overturned by this finding; the per-block pattern is a refinement, not
-a contradiction, of the headline verdict.
+a contradiction, of the headline verdict. **The blocks-5/6 exceedance
+of the 0.05 threshold specifically has wide enough cell-to-cell
+variance (n=15) that its CI crosses the threshold -- this is a real
+limitation of the finding's precision, not just a formality**, and
+should be carried into any citation of this result in the Stage 2
+Decision Report.
 
 ## Decision
 
 **VERIFIED** (network-wide, pooled criterion) -- attention is
 substantially class-blind, consistent with the master prompt's
 interpretation that adding cross-attention would not obviously help.
-**Refinement, not overturning the verdict:** blocks 5-6 are the
-exception, converging with three other independent measurement types
-(Items 1/3/5) on the same late-block region.
+**Refinement, not overturning the verdict:** blocks 5-6 show
+directionally distinctive (higher) class-dependence than blocks 1-4 in
+point estimates, converging in DIRECTION with three other independent
+measurement types (Items 1/3/5) on the same late-block region -- but
+the specific claim that blocks 5/6 individually cross the 0.05
+threshold is not statistically confirmed given cell-to-cell variance
+(both CIs include sub-threshold values).
 
 ## Next Steps
 

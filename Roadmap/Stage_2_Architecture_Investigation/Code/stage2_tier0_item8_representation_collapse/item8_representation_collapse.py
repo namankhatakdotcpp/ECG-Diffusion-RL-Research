@@ -52,6 +52,8 @@ REPORT_DIR = REPO_ROOT / "Roadmap" / "Stage_2_Architecture_Investigation" / "Rep
 TIMESTEPS = [100, 500, 900]
 N_GEN_PER_CLASS = 20
 VERIFIED_MARGIN_ABOVE_CHANCE = 0.15
+N_SPLITS = 3  # independent random train/test splits, per validity-check review
+PERMUTATION_SEED = 12345
 
 
 def main() -> None:
@@ -112,8 +114,26 @@ def main() -> None:
 
         for layer in range(n_layers):
             X = np.stack(features_by_block[layer])
+            d_hidden = X.shape[1]
             fr = fisher_ratio(X, labels_arr)
             lp = linear_probe_accuracy(X, labels_arr)
+
+            # --- Validity check 1: n_train vs. d, reported explicitly, not just implied ---
+            n_train_le_d = lp.n_train_samples <= d_hidden
+
+            # --- Validity check 2: multiple random splits (not just the default seed=42) ---
+            split_accuracies = [lp.accuracy]  # seed=42 result already computed above
+            split_train_accuracies = [lp.train_accuracy]
+            for split_seed in range(1, N_SPLITS):
+                lp_split = linear_probe_accuracy(X, labels_arr, seed=42 + split_seed)
+                split_accuracies.append(lp_split.accuracy)
+                split_train_accuracies.append(lp_split.train_accuracy)
+
+            # --- Validity check 3: label-permutation control ---
+            rng = np.random.RandomState(PERMUTATION_SEED + layer + t_val)
+            shuffled_labels = labels_arr.copy()
+            rng.shuffle(shuffled_labels)
+            lp_shuffled = linear_probe_accuracy(X, shuffled_labels)
 
             rows.append({
                 "timestep": t_val, "block": layer + 1,
@@ -124,16 +144,34 @@ def main() -> None:
                 "probe_chance_accuracy": lp.chance_accuracy,
                 "probe_train_accuracy": lp.train_accuracy,
                 "probe_n_train_samples": lp.n_train_samples,
+                "probe_n_test_samples": len(labels_arr) - lp.n_train_samples,
+                "hidden_dim": d_hidden,
+                "n_train_le_d": n_train_le_d,
                 "probe_pca_components": lp.pca_components,
                 "probe_classes_excluded": lp.classes_excluded_low_n,
+                "multi_split_accuracies": split_accuracies,
+                "multi_split_mean": float(np.mean(split_accuracies)),
+                "multi_split_range": float(max(split_accuracies) - min(split_accuracies)),
+                "permutation_test_accuracy": lp_shuffled.accuracy,
+                "permutation_train_accuracy": lp_shuffled.train_accuracy,
+                "permutation_at_or_near_chance": lp_shuffled.accuracy < chance + VERIFIED_MARGIN_ABOVE_CHANCE,
             })
             raw["per_timestep"][str(t_val)][str(layer + 1)] = {
                 "fisher_ratio": fr.fisher_ratio, "fisher_warning": fr.warning,
                 "probe_accuracy": lp.accuracy, "probe_warning": lp.warning,
+                "hidden_dim": d_hidden, "n_train": lp.n_train_samples,
+                "n_train_le_d": n_train_le_d,
+                "multi_split_accuracies": split_accuracies,
+                "permutation_test_accuracy": lp_shuffled.accuracy,
+                "permutation_train_accuracy": lp_shuffled.train_accuracy,
             }
             log.info(f"t={t_val} block={layer+1}: Fisher={fr.fisher_ratio:.4f} "
                      f"probe_acc={lp.accuracy:.4f} (chance={lp.chance_accuracy:.4f}, "
-                     f"pca_components={lp.pca_components}, train_acc={lp.train_accuracy:.4f})")
+                     f"pca_components={lp.pca_components}, train_acc={lp.train_accuracy:.4f}, "
+                     f"n_train={lp.n_train_samples}, d={d_hidden}, n_train<=d={n_train_le_d}) | "
+                     f"multi-split accs={[round(a,3) for a in split_accuracies]} | "
+                     f"PERMUTATION test_acc={lp_shuffled.accuracy:.4f} "
+                     f"(chance={chance:.4f}, train_acc={lp_shuffled.train_accuracy:.4f})")
             if fr.warning:
                 log.info(f"  Fisher warning: {fr.warning}")
             if lp.warning:
