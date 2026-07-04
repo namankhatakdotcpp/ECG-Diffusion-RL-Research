@@ -91,3 +91,24 @@ def plot_residual_ratio_vs_block(df: pd.DataFrame, fig_dir: Path) -> Path:
     fig.savefig(path, dpi=200)
     plt.close(fig)
     return path
+
+
+def plot_scale_shift_fraction_vs_block(df: pd.DataFrame, fig_dir: Path) -> Path:
+    """Item 5 addition -- stacked bar of scale_fraction vs shift_fraction
+    per block. Expects columns `block`, `scale_fraction`, `shift_fraction`."""
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.bar(df["block"], df["scale_fraction"], label="Scale (scale1+scale2)", color="darkorange")
+    ax.bar(df["block"], df["shift_fraction"], bottom=df["scale_fraction"],
+           label="Shift (shift1+shift2)", color="steelblue")
+    ax.axhline(0.5, linestyle="--", color="gray", alpha=0.7, label="Even split (0.5)")
+    ax.set_xlabel("Transformer block index (1 = earliest)")
+    ax.set_ylabel("Fraction of adaLN weight-matrix Frobenius-norm-squared")
+    ax.set_title("Item 5: adaLN scale vs. shift capacity allocation per block")
+    ax.set_xticks(df["block"])
+    ax.set_ylim(0, 1.05)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    path = fig_dir / "scale_shift_fraction_vs_block.png"
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+    return path
