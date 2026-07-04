@@ -1,0 +1,98 @@
+"""
+Stage 2 Tier 0 -- shared forward-hook mechanisms.
+
+LIFTED (copied, not moved) from the already-verified, already-committed
+scripts below -- those originals are untouched and remain the historical
+record for their own items:
+  - `_register_layer_hooks`: originally
+    stage2_tier0_item1_layerwise_magnitude_direction/layerwise_direction_probe.py
+    (itself a derived copy of Stage 1 Experiment 3.5's hook).
+  - `RawCaptureHook`, `OverrideHook`: originally
+    stage2_tier0_item2_localized_gain/item2_gain_sweep.py (Item 2A).
+  - `LocalizedGainHook`: originally
+    stage2_tier0_item2_localized_gain/item2_localized_gain.py (Item 2A, A1/A2).
+
+Every item from Item 2B onward should import from here rather than
+reimplementing its own copy -- the duplication across Item 1 and Item 2A
+is exactly the drift risk this module exists to close off.
+"""
+
+from __future__ import annotations
+
+import torch
+
+
+def register_layer_hooks(model) -> tuple[list, dict]:
+    """Registers a forward hook on every model.blocks[i] that mean-pools
+    the block's per-token output (B, seq_len, model_dim) -> (B, model_dim)
+    and stores it in the returned `captured` dict, keyed by block index.
+    Unchanged from Item 1's own `_register_layer_hooks`."""
+    captured: dict[int, torch.Tensor] = {}
+    handles = []
+
+    def _make_hook(layer_idx: int):
+        def _hook(module, inp, out):
+            captured[layer_idx] = out.detach().mean(dim=1).cpu()
+        return _hook
+
+    for i, block in enumerate(model.blocks):
+        handles.append(block.register_forward_hook(_make_hook(i)))
+    return handles, captured
+
+
+class RawCaptureHook:
+    """Captures a block's raw, full per-token output tensor (1, seq_len, D)
+    -- not mean-pooled. Used to obtain H_k^A(i)/H_k^B(i) so a substitution
+    override can be constructed without recomputing the block's forward
+    pass for every gain value. Unchanged from Item 2A's own implementation."""
+
+    def __init__(self):
+        self.tensor: torch.Tensor | None = None
+
+    def __call__(self, module, inp, out):
+        self.tensor = out.detach().clone()
+        return out
+
+
+class OverrideHook:
+    """Forward hook on a target block. When `.override` is set (a full
+    (1, seq_len, D) tensor), replaces the block's output with it for that
+    single forward call; when None, passes the real output through
+    unmodified. Unchanged from Item 2A's own implementation. Reusable for
+    both the localized (single block) and uniform (multiple blocks,
+    cumulative) variants -- for the uniform variant, register one
+    independent instance per target block."""
+
+    def __init__(self):
+        self.override: torch.Tensor | None = None
+
+    def __call__(self, module, inp, out):
+        if self.override is not None:
+            return self.override
+        return out
+
+
+class LocalizedGainHook:
+    """Forward hook on a single target block implementing the cached-mode
+    (class-A/class-B) substitution directly, as an alternative calling
+    convention to RawCaptureHook+OverrideHook -- kept for parity with
+    Item 2A's A1/A2 identity-regression test, which was written against
+    this exact class. Unchanged from Item 2A's own implementation."""
+
+    def __init__(self, gain: float):
+        self.gain = gain
+        self.mode: str | None = None  # "A" or "B", set by the caller before each forward()
+        self.cached_A: torch.Tensor | None = None
+
+    def __call__(self, module, inp, out):
+        if self.mode == "A":
+            self.cached_A = out.detach().clone()
+            return out
+        elif self.mode == "B":
+            if self.cached_A is None:
+                raise RuntimeError("Class-A pass must run before class-B pass.")
+            delta = out - self.cached_A
+            corrected = self.cached_A + self.gain * delta
+            return corrected
+        else:
+            raise RuntimeError("LocalizedGainHook.mode not set before forward().")
