@@ -8,18 +8,18 @@ separate columns -- conflating "when we decided what to test" with "when
 we ran it" is exactly the ambiguity Stage 1's dirty-tree finding already
 flagged as a real provenance risk in this project.
 
-| Item | Status | Verdict | Pre-reg commit | Results commit | Report |
-|---|---|---|---|---|---|
-| Item 1 -- Layer-wise magnitude/direction probe | Complete | Confirmed two-drop shape (dominant block1->2, smaller real block5->6) | -- | `07460c0` | `Reports/Tier0_Findings.md` |
-| Item 2A -- Localized gain (block1->2 only) | Complete | SUPPORTED (driven by g=3.0) | `e84c54c` | `1bb3062` | `Reports/Item2_Report.md` |
-| Item 2B -- Uniform gain (blocks 1-5) | Pending | -- | `e84c54c` | -- | -- |
-| Item 3 | Not started | -- | -- | -- | -- |
-| Item 4 | Not started | -- | -- | -- | -- |
-| Item 5 | Not started | -- | -- | -- | -- |
-| Item 6 | Not started | -- | -- | -- | -- |
-| Item 7 | Not started | -- | -- | -- | -- |
-| Item 8 | Not started | -- | -- | -- | -- |
-| Item 9 | Not started | -- | -- | -- | -- |
+| Item | Status | Verdict | Pre-reg commit | Results commit | Report | Archive |
+|---|---|---|---|---|---|---|
+| Item 1 -- Layer-wise magnitude/direction probe | Complete | Confirmed two-drop shape (dominant block1->2, smaller real block5->6) | -- | `07460c0` | `Reports/Tier0_Findings.md` | N/A -- ran locally (CPU forward passes against the already-extracted Stage 1 checkpoint), no GPU round-trip, nothing archived to tar.gz |
+| Item 2A -- Localized gain (block1->2 only) | Complete | SUPPORTED (driven by g=3.0) | `e84c54c` | `1bb3062` | `Reports/Item2_Report.md` | N/A -- same reason as Item 1 (CPU-only, no GPU round-trip) |
+| Item 2B -- Uniform gain (blocks 1-5) | Complete | SUPPORTED on its own criteria (driven by nominal_gain=1.5, the smallest grid point clearing the threshold). Qualifier: "Recovery advantage of uniform over localized is confounded by budget-matching breakdown under nonlinear compounding -- see Item2B_Report.md Sec. 3 before citing this as an architectural preference." | `e84c54c` | `6778f03` | `Reports/Item2B_Report.md` | N/A -- same reason as Item 1/2A |
+| Item 3 | Not started | -- | -- | -- | -- | -- |
+| Item 4 | Not started | -- | -- | -- | -- | -- |
+| Item 5 | Not started | -- | -- | -- | -- | -- |
+| Item 6 | Not started | -- | -- | -- | -- | -- |
+| Item 7 | Not started | -- | -- | -- | -- | -- |
+| Item 8 | Not started | -- | -- | -- | -- | -- |
+| Item 9 | Not started | -- | -- | -- | -- | -- |
 
 Item 1 has no separate pre-registration commit: it was Stage 1's own
 Experiment 3.5, reused here (per its own docstring, "DERIVED COPY, not an
