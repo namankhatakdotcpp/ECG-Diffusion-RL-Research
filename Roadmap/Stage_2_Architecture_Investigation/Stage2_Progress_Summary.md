@@ -1,0 +1,26 @@
+# Stage 2 / Tier 0 -- Progress Summary
+
+Companion to `STAGE2_STATUS.md` (which tracks provenance/commits). This
+file tracks the *scientific* thread across items -- hypothesis, verdict,
+confidence, confounds, and dependencies -- so writing the eventual
+`Stage_2_Decision_Report.md` doesn't require re-extracting conclusions
+and caveats from nine separate reports by hand.
+
+| Item | Hypothesis | Status | Verdict | Confidence | Confounds | Depends on |
+|---|---|---|---|---|---|---|
+| 1 | Layer-wise conditioning magnitude decays block1->6 while direction consistency stays high | Complete | SUPPORTED (two-drop shape: dominant block1->2, smaller real block5->6) | High | None | -- |
+| 2A | Localized gain correction (block1->2 only) recovers block-6 magnitude while preserving direction | Complete | SUPPORTED (driven by g=3.0) | High | None (own verdict is clean) | Item 1 |
+| 2B | Uniform gain correction (blocks 1-5, budget-matched) recovers block-6 magnitude while preserving direction | Complete | SUPPORTED (driven by nominal_gain=1.5, own criteria) | High (own verdict); Medium (comparison vs. 2A) | **Comparison with 2A is CONFOUNDED** -- budget-matching formula does not hold actual injected magnitude equal under nonlinear compounding (ratio grows ~0.6-1.4x at g=1.25 to ~2-3.6x at g=5.0). "Uniform beats localized" is NOT a clean architectural finding without this qualifier -- see `Reports/Item2B_Report.md` Sec. 3. | Item 1 |
+| 3 | Residual-path update itself (`\|\|block_output-block_input\|\|/\|\|block_input\|\|`) shows declining magnitude/conditioning-share across blocks, complementary evidence to Item 2's magnitude-decay finding | Investigate-only (pre-registration not yet drafted; dependency audit complete) | -- | -- | -- | None (complementary to Item 1/2, not derived from them -- Item 3's result would not change if Item 1/2's numbers changed; it only needs a checkpoint and fresh paired forward passes. Dependency audit: block 1's true input requires one new forward_pre_hook on `model.blocks[0]`, blocks 2-6's inputs are free (= previous block's already-hooked output); no cached JSON from Item 1/2 substitutes, since both only ever persisted derived cross-class delta scalars, never raw feature vectors. Fresh sweep required, CPU-only, ~1-2 min, same order as Item 1.) |
+| 4 | Class-embedding gradient competitiveness (grad norm at class_emb.weight vs. other param groups, early vs. late checkpoint) | Not started | -- | -- | -- | -- |
+| 5 | AdaLN/FiLM parameter statistics (per-block weight-matrix Frobenius norm, scale vs. shift allocation) | Not started | -- | -- | -- | -- |
+| 6 | Attention entropy/map inspection (class-blind attention test) | Not started | -- | -- | -- | -- |
+| 7 | Class-embedding evolution across training checkpoints | Not started | -- | -- | -- | -- |
+| 8 | Representation collapse analysis (Fisher ratio + linear probe, per block) | Not started | -- | -- | -- | -- |
+
+**How to apply:** before starting any new item, check this table's
+"Depends on" column against the item's stated hypothesis in
+`Stage2_Master_Prompt.md` -- if a dependency is on a confounded verdict
+(like Item 2B's comparison), that must be resolved (restated hypothesis
+or explicit carried-forward qualifier) before pre-registration, not
+discovered afterward.
