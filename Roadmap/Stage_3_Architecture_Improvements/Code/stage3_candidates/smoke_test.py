@@ -82,3 +82,68 @@ def run_smoke_test(cfg, log, variant: str, run_id: str) -> None:
     log.info(f"[{run_id}] SMOKE TEST PASSED: shape OK, near-zero-at-init OK, "
              f"{n_params} params all received finite gradients")
     print(f"[{run_id}] SMOKE TEST PASSED (variant={variant}, params={n_params/1e6:.2f}M)")
+
+
+def run_optimizer_smoke_test(cfg, log, variant: str, run_id: str, n_iters: int = 2) -> bool:
+    """Two-iteration forward -> backward -> optimizer.step() check.
+
+    Catches a bug class the forward/backward-only smoke test above
+    cannot: parameters (or the loss) that only go NaN/Inf AFTER a real
+    optimizer update is applied -- e.g. a gamma/boost parameter whose
+    gradient is finite but whose Adam second-moment estimate blows up
+    once state actually accumulates across steps, or weight-decay
+    interacting badly with a scalar parameter. Same optimizer grouping
+    convention as common_train.py/step04 (class_emb excluded from
+    weight decay), same synthetic-random-input convention as the
+    shape/gradient-flow smoke test above.
+    """
+    torch.manual_seed(0)
+    n_classes = int(cfg.ptbxl.n_classes)
+    n_leads = 12
+    seq_len = int(cfg.ptbxl.signal_length)
+    batch_size = 4
+    d = cfg.diffusion
+
+    model = build_variant_model(cfg, n_classes=n_classes, variant=variant)
+    decay_params   = [p for n, p in model.named_parameters() if n != "class_emb.weight"]
+    nodecay_params = [p for n, p in model.named_parameters() if n == "class_emb.weight"]
+    optimiser = torch.optim.AdamW(
+        [
+            {"params": decay_params,   "weight_decay": float(d.weight_decay)},
+            {"params": nodecay_params, "weight_decay": 0.0},
+        ],
+        lr=float(d.lr),
+    )
+
+    passed = True
+    for it in range(n_iters):
+        x_t = torch.randn(batch_size, n_leads, seq_len)
+        t = torch.randint(0, int(d.T), (batch_size,))
+        y = torch.randint(0, n_classes, (batch_size,))
+        noise = torch.randn_like(x_t)
+
+        out = model(x_t, t, y)
+        loss = F.mse_loss(out, noise)
+        if not torch.isfinite(loss):
+            log.error(f"[{run_id}] iter {it}: non-finite loss ({loss.item()})")
+            passed = False
+            break
+
+        optimiser.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), float(d.grad_clip))
+        optimiser.step()
+
+        n_nonfinite_params = 0
+        for name, p in model.named_parameters():
+            if not torch.isfinite(p).all():
+                n_nonfinite_params += 1
+                log.error(f"[{run_id}] iter {it}: non-finite param after optimizer.step(): {name}")
+        if n_nonfinite_params > 0:
+            passed = False
+            break
+
+    verdict = "PASS" if passed else "FAIL"
+    log.info(f"[{run_id}] OPTIMIZER SMOKE TEST ({n_iters} iters, variant={variant}): {verdict}")
+    print(f"[{run_id}] OPTIMIZER SMOKE TEST: {verdict}")
+    return passed
