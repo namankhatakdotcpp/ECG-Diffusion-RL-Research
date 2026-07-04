@@ -9,18 +9,27 @@ Items 1-3?
 
 ## Executive summary
 
-**VERIFIED.** `class_emb.weight`'s gradient was competitive during
-training: its pooled mean `||grad||` sits at the **61.1th percentile**
-among the other 95 named-parameter tensors (bootstrap 95% CI:
-[58.9%, 62.1%], SD 0.64pp, n=1000 resamples over the 30 real training
-batches) -- above median, not dominant, and not starved. The
-`adaLN` parameter-type bucket receives the largest mean gradient of
-any bucket (0.0125, ~6.7x `class_emb`'s 0.0019), consistent with Item
-5's finding that `adaLN` carries substantial, unevenly-allocated weight
-capacity. **The secondary (fixed-timestep) design shows the same
-directional pattern as Item 1's own forward-pass sensitivity finding:
+**VERIFIED, precisely stated:** `class_emb.weight`'s pooled mean
+`||grad||` sits at the **61.1th percentile** among the other 95
+named-parameter tensors (bootstrap 95% CI: [58.95%, 62.11%], SD 0.64pp,
+n=1000 resamples over 30 i.i.d. real training batches, independence
+confirmed below). **Two claims, kept separate rather than conflated:**
+
+- **Survives:** the class embedding received a consistently non-
+  negligible, above-median gradient signal throughout training -- it
+  was actively optimized, not starved or vanishing.
+- **Does not survive:** that it was "competitive" in the sense of
+  rivaling the strongest gradient pathway. It was not -- the `adaLN`
+  parameter-type bucket receives the largest mean gradient of any
+  bucket (0.0125, ~6.7x `class_emb`'s 0.0019), consistent with Item 5's
+  finding that `adaLN` carries substantial, unevenly-allocated weight
+  capacity. `class_emb.weight` is not among the highest-gradient
+  parameter groups in this model.
+
+**The secondary (fixed-timestep) design shows the same directional
+pattern as Item 1's own forward-pass sensitivity finding:**
 class-conditioning influence -- whether measured via gradient rank or
-via forward-pass magnitude -- declines as noise increases.**
+via forward-pass magnitude -- declines as noise increases.
 
 ## Methodology (per the locked pre-registration, `Item4_PreRegistration.md`)
 
@@ -73,6 +82,29 @@ the comparison set).
 (`7b1921eb6e9c7ce15f5f8713d5325cff76b7a1cd137148f6c8b7f9488c7abbea`)
 confirmed to match between the GPU server's report and this Mac's
 independent `shasum -a 256` computation after transfer.
+
+## Independence check (required before trusting the bootstrap CI)
+
+Bootstrap resampling assumes the 30 draws are i.i.d. -- confirmed by
+direct code read, not assumed: **PASS.**
+
+- Each draw pulls the *next* batch from a single `DataLoader` iterator
+  built on `WeightedRandomSampler(..., replacement=True)`
+  (`item4_gradient_probe.py:83-112`), which pre-generates one shuffled
+  index list for the whole epoch at iterator creation. Consecutive
+  `next(train_iter)` calls consume non-overlapping consecutive
+  32-sample slices of that list (`drop_last=True`) -- **no two of the
+  30 primary draws share any training sample**, confirmed by
+  construction (30 x 32 = 960 samples drawn from a ~17,418-record
+  training set, non-overlapping batches by DataLoader design).
+- Each draw also gets its own seed (`torch.manual_seed(1000+i)`,
+  `item4_gradient_probe.py:218`), independently controlling that
+  draw's CFG-dropout mask and per-sample random timestep -- no shared
+  stochastic source across draws.
+
+**No correlated/shared randomness source exists across the 30 draws.**
+The bootstrap SD is not understated by hidden correlation; the reported
+CI can be trusted at face value.
 
 ## Bootstrap confidence interval on the percentile-rank estimate
 
@@ -155,19 +187,26 @@ standing discipline on cross-item claims (established for Item 5).
 
 ## Interpretation
 
-The class embedding's gradient was never starved or non-competitive in
-an absolute sense -- it sits above the median of all 95 other
-parameter tensors throughout training-mode backward passes, with a
-statistically tight (bootstrap-confirmed) percentile estimate. It is
-also not dominant: `adaLN` parameters receive substantially larger
-gradients (consistent with Item 5's finding that `adaLN` holds
-significant, non-uniformly-allocated weight capacity). The declining
-percentile rank with increasing timestep, corroborated independently by
-Item 1's forward-pass magnitude decline, suggests the class-
-conditioning pathway's influence -- whether measured as a training-time
-gradient signal or an inference-time activation magnitude -- is
-genuinely weaker in high-noise regimes, not an artifact specific to
-either measurement's methodology.
+Two claims, kept explicitly separate rather than merged into a single
+"competitive" verdict:
+
+- **Survives:** the class embedding's gradient was consistently
+  non-negligible and above-median throughout training-mode backward
+  passes (61st percentile, tight bootstrap CI) -- it was actively
+  optimized, not starved or vanishing.
+- **Does not survive:** any claim that it rivaled the strongest
+  gradient pathway. `adaLN` parameters receive substantially larger
+  gradients (~6.7x), consistent with Item 5's finding that `adaLN`
+  holds significant, non-uniformly-allocated weight capacity.
+  `class_emb.weight` is not among the highest-gradient parameter groups
+  in this model.
+
+The declining percentile rank with increasing timestep, corroborated
+independently by Item 1's forward-pass magnitude decline, suggests the
+class-conditioning pathway's influence -- whether measured as a
+training-time gradient signal or an inference-time activation magnitude
+-- is genuinely weaker in high-noise regimes, not an artifact specific
+to either measurement's methodology.
 
 ## Permanent limitation (epoch-25 comparison)
 
@@ -184,13 +223,17 @@ current training run.**
 
 ## Decision
 
-**VERIFIED.** Class embedding gradient competitiveness confirmed
-(61.1% percentile rank, bootstrap-verified stable), all sanity checks
-passed with real underlying values (not trust-me strings), and the
-timestep-dependence finding cross-validates with Item 1's independent
-measurement. The single-checkpoint scope limitation (epoch-25
-comparison unavailable) is permanent, documented, and does not block
-this verdict.
+**VERIFIED, precisely:** the class embedding received a consistently
+non-negligible, above-median gradient signal throughout training
+(61.1st percentile, bootstrap-verified stable, i.i.d. draws confirmed)
+-- it was actively optimized, not starved. It was **not**, however,
+competitive with the strongest gradient pathway (`adaLN`, ~6.7x
+larger) -- not among the highest-gradient parameter groups in this
+model. All sanity checks passed with real underlying values (not
+trust-me strings), and the timestep-dependence finding cross-validates
+with Item 1's independent measurement. The single-checkpoint scope
+limitation (epoch-25 comparison unavailable) is permanent, documented,
+and does not block this verdict.
 
 ## Next steps
 
