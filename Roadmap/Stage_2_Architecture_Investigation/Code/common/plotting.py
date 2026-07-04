@@ -140,3 +140,37 @@ def plot_attention_entropy_vs_block(df: pd.DataFrame, fig_dir: Path, threshold: 
     fig.savefig(path, dpi=200)
     plt.close(fig)
     return path
+
+
+def plot_representation_collapse(df: pd.DataFrame, fig_dir: Path, chance: float) -> Path:
+    """Item 8 addition -- Fisher ratio and linear-probe accuracy vs block,
+    one line per timestep. Expects columns `block`, `timestep`,
+    `fisher_ratio`, `probe_accuracy`."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.2))
+    colors = {100: "steelblue", 500: "darkorange", 900: "crimson"}
+    for t_val, g in df.groupby("timestep"):
+        g = g.sort_values("block")
+        c = colors.get(t_val, "gray")
+        ax1.plot(g["block"], g["fisher_ratio"], marker="o", color=c, label=f"t={t_val}")
+        ax2.plot(g["block"], g["probe_accuracy"], marker="s", color=c, label=f"t={t_val}")
+
+    ax1.set_xlabel("Block")
+    ax1.set_ylabel("Fisher ratio")
+    ax1.set_title("Fisher ratio vs. block")
+    ax1.set_xticks(sorted(df["block"].unique()))
+    ax1.legend(fontsize=8)
+
+    ax2.axhline(chance, linestyle="--", color="gray", label=f"Chance ({chance:.3f})")
+    ax2.set_xlabel("Block")
+    ax2.set_ylabel("Linear-probe test accuracy")
+    ax2.set_title("Linear-probe accuracy vs. block")
+    ax2.set_xticks(sorted(df["block"].unique()))
+    ax2.set_ylim(0, 1.05)
+    ax2.legend(fontsize=8)
+
+    fig.suptitle("Item 8: representation-collapse analysis")
+    fig.tight_layout()
+    path = fig_dir / "representation_collapse_vs_block.png"
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+    return path
