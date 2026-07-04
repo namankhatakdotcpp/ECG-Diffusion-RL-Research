@@ -1,10 +1,12 @@
 # Stage 3 Roadmap -- Architecture Improvements
 
-**Status: structure only, drafted from scratch this session.** No prior
-"Stage 3 roadmap" existed anywhere in this repository or its git
-history before this document -- confirmed by direct search, not
-assumed, after a planning artifact referencing one turned out not to
-exist. This file is the real, first, tracked version.
+**Status: structure only.** No prior "Stage 3 roadmap" existed
+anywhere in this repository or its git history before this document --
+confirmed by direct search, not assumed, after a planning artifact
+referencing one turned out not to exist. This is the real, tracked
+version, revised once after review (time/scope budgets on Phase 0 and
+on infrastructure-building, parallel implementation track, experiment
+IDs, quantitative kill-policy form, baseline-comparison protocol).
 
 **Numeric thresholds for Phase 0's decision rules are NOT included
 here** -- they are a separate, subsequent pre-registration step
@@ -57,6 +59,31 @@ test it before any gain-mechanism design assumes it's true.
 
 Structure only in this document; numeric decision rules are
 pre-registered separately, before Task 0.1/0.2 run.
+
+**Time/scope budget (added on review):** Phase 0 is a validation check,
+not a new investigation cycle. Stage 2's own history (Item 2 alone went
+through three pre-registration revisions before any code ran) shows
+investigation expands unless bounded. Cap: **target 2-3 days elapsed,
+new code additions kept small** (extending `common/` and two analysis
+scripts, not new infrastructure) for both tasks combined. If either
+task is trending past this, that itself is a signal to stop and
+re-scope, not push through.
+
+**GPU:** *Expected 0 hours*, based on Item 3's CPU-only ablation
+precedent (Task 0.2 reuses that exact methodology). This is stated as
+an expectation to confirm before running, not an absolute ceiling --
+if `final_norm`/`unproj` ablation turns out to need GPU-scale batching
+that Item 3's original didn't, that must be surfaced explicitly rather
+than silently violated or used to block a legitimate check.
+
+**Parallel implementation track (Track A/B):** Phase 1's candidate
+*implementation code* (LayerScale, residual scaling, etc.) has no
+actual dependency on Phase 0's result -- only *which candidates get
+trained* in Phase 2 depends on it. Writing this code in parallel with
+Phase 0's validation is free parallelism: worst case some of it goes
+unused, best case it saves real days once Decision Gate A resolves.
+Track A = Phase 0 validation; Track B = candidate implementation,
+running concurrently, not gated on each other.
 
 ### Task 0.1 -- Dilution-ratio test
 
@@ -126,6 +153,27 @@ instead, none of the first five candidates touch that region -- the
 6th candidate becomes the priority and the gain-focused candidates are
 deprioritized or dropped, not built anyway "for completeness."
 
+**Experiment IDs and queue:** each candidate run gets a stable ID
+(`S3-001`, `S3-002`, ...) assigned at Phase 1, used consistently
+through Phase 2 training, Phase 3 evaluation, and Phase 4's comparison
+table -- so a result can always be traced back to its exact candidate
+definition and commit, the same provenance discipline Stage 2 applied
+per-item. Runs are worked in a simple queue (pending -> running ->
+done/killed), not a scheduler or dashboard.
+
+**Infrastructure budget:** the queue and any shared evaluation
+automation get their own cap -- **target 1-2 days, reuse existing
+`mentor_eval/run_all.py` rather than building a new harness** (see
+Sec. 6). This is the same principle as Phase 0's budget: pipeline-
+building is exactly the kind of overhead Stage 3 exists to avoid, so
+it does not get an open-ended allowance just because it's
+"infrastructure" rather than "investigation."
+
+**Directory layout:** `Code/stage3_candidates/<S3-XXX>_<name>/` per
+candidate (implementation + training script), `Results/<S3-XXX>/`
+per run (checkpoint pointer, `metrics.json`, `plots/`, `summary.md`) --
+mirrors Stage 2's per-item `Code/stage2_tier0_itemN_.../` convention.
+
 ## 5. Phase 2 -- GPU training
 
 Automated implement -> push -> pull -> train -> checkpoint cycle per
@@ -136,6 +184,29 @@ candidate. No analysis during this phase -- that's Phase 3/5's job.
 Standardized per-candidate output bundle: `metrics.json`, `plots/`,
 `summary.md`. Same structure for every candidate, so Phase 4's
 comparison is apples-to-apples without per-candidate custom analysis.
+**This bundle is produced by running the existing `mentor_eval/run_all.py`
+pipeline** (already produces the 4-class accuracy/AUC/similarity
+numbers cited throughout this project) against each candidate's
+checkpoint -- not a new evaluation harness built for Stage 3.
+
+### Baseline-comparison protocol
+
+Every candidate is judged against one fixed reference point, not a
+number that drifts per comparison:
+
+- Baseline metrics come from **one frozen, checksum-verified run** of
+  `mentor_eval/run_all.py` against the current `diffusion_best.pt` --
+  recorded once, reused for every candidate, not silently
+  re-measured differently each time.
+- Every candidate is evaluated with the **identical evaluation code
+  path** as the baseline -- no per-candidate custom evaluation logic,
+  same reasoning as Item 2's "compare against the immediately
+  preceding, verified baseline" discipline.
+- This matters because a checkpoint that "looks fine" can hide bugs
+  (Stage 1/2's own history includes an EMA bug and a dirty-tree
+  finding found only by re-verification) -- Decision Gate B's
+  "candidate improves on baseline" trigger is only as trustworthy as
+  that baseline's own provenance.
 
 ## 7. Decision Gate B -- when to stop and analyze mid-cycle
 
@@ -153,12 +224,14 @@ Five pre-committed triggers (not a judgment call each time):
    candidate that somehow makes conditioning *less* decodable, which
    Item 8 found never happens at baseline).
 
-**Kill policy** (applies within Phase 2/3, independent of Gate B):
+**Kill policy** (applies within Phase 2/3, independent of Gate B --
+quantitative form; exact N is set in pre-registration, not here):
 
 | Condition | Action |
 |---|---|
-| Training diverges | Stop immediately |
-| No improvement after a pre-specified epoch budget | Terminate early |
+| Training diverges (loss NaN/Inf, or explodes past a pre-set bound) | Stop immediately |
+| No improvement for N consecutive evaluations (plateau) | Terminate early |
+| Statistically worse than baseline on the primary metric | Discard candidate |
 | Inferior on >=3 metrics vs. the current best | Discard candidate |
 | Clearly better than current best | Continue full training |
 
@@ -179,12 +252,22 @@ is worth the cost; investigating results before a downstream decision
 depends on them is exactly the overhead Stage 2 spent extra cycles on
 that Stage 3 should not repeat.
 
-## 10. Time allocation (directional, not exact)
+## 10. Time allocation and milestones
 
-Stage 2 was roughly Investigation 70% / Engineering 20% / GPU 5% /
-Documentation 5%. Stage 3 shifts to roughly **Investigation 15% /
-Engineering 45% / GPU Training 30% / Documentation 10%** -- the shift
-itself matters, not the precise numbers.
+Stage 2 was investigation-heavy (~70% investigation); Stage 3 shifts
+decisively toward engineering and GPU training instead, since the job
+is now building and testing candidates rather than diagnosing the
+existing model -- this is a one-time calibration signal for the pivot,
+not a tracked KPI, so no percentage table is maintained here.
+
+| Milestone | Target |
+|---|---|
+| Phase 0 (Tasks 0.1/0.2) + Decision Gate A | within budget in Sec. 3 |
+| Track B candidate implementations ready | in parallel with Phase 0 |
+| Phase 2 GPU training, all candidates | after Gate A resolves |
+| Phase 3 evaluation bundles, all candidates | rolling, as each finishes training |
+| Phase 4 selection | after last candidate's Gate B resolves |
+| Phase 5 (if triggered) | after Phase 4 |
 
 ## 11. Operating mode
 
