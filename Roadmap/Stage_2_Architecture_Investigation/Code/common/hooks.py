@@ -40,6 +40,31 @@ def register_layer_hooks(model) -> tuple[list, dict]:
     return handles, captured
 
 
+def register_block0_input_hook(model) -> tuple[object, dict]:
+    """Item 3 addition. Captures block 1's (model.blocks[0]'s) TRUE input
+    tensor -- `tokens + cond.unsqueeze(1)` at step04_transformer_diffusion.py:271,
+    computed inline between `patch_embed` and the block loop, so it is NOT
+    the output of any existing hookable module (confirmed by direct source
+    read, Item3_PreRegistration.md). Uses `register_forward_pre_hook`,
+    which receives the actual positional args a module is about to be
+    called with -- `inp` here is `(tokens, cond_film)`, so `inp[0]` is
+    exactly the tensor block 1 consumes. Mean-pooled the same way as
+    `register_layer_hooks`, for direct comparability with every other
+    captured block-boundary tensor. Blocks 2-6's inputs need no equivalent
+    hook: `cond_film` is held constant across the block loop (source-
+    verified, step04_transformer_diffusion.py:257-282), so block k's
+    output IS block k+1's input, bit-identical -- already captured by
+    `register_layer_hooks` with zero new inference."""
+    captured: dict[str, torch.Tensor] = {}
+
+    def _pre_hook(module, args):
+        tokens = args[0]
+        captured["block0_input"] = tokens.detach().mean(dim=1).cpu()
+
+    handle = model.blocks[0].register_forward_pre_hook(_pre_hook)
+    return handle, captured
+
+
 class RawCaptureHook:
     """Captures a block's raw, full per-token output tensor (1, seq_len, D)
     -- not mean-pooled. Used to obtain H_k^A(i)/H_k^B(i) so a substitution

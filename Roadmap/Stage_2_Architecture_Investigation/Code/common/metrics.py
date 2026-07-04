@@ -32,3 +32,28 @@ def magnitude_and_consistency(feat_a_draws, feat_x_draws) -> tuple[float, float]
     magnitude = float(np.mean(np.linalg.norm(deltas, axis=1))) / (mean_base_norm + 1e-8)
     consistency = float(np.mean([cosine_sim(d, mean_delta) for d in deltas]))
     return magnitude, consistency
+
+
+def residual_update_ratio(block_input_draws, block_output_draws) -> float:
+    """Item 3's R_k, per Item3_PreRegistration.md's Formal Definition
+    section: the WITHIN-PASS residual update ratio at one block, for one
+    class, across draws --
+
+        DeltaH_k(i) = H_k^out(i) - H_k^in(i)
+        R_k(i)      = ||DeltaH_k(i)|| / ||H_k^in(i)||
+        R_k         = mean_i( R_k(i) )   (this function's return value)
+
+    Deliberately a SIBLING to magnitude_and_consistency, not a reuse of
+    it: that function computes a CROSS-CLASS delta (feat_x - feat_a,
+    two different class labels, same block); this one computes a
+    WITHIN-PASS delta (block_output - block_input, one class label, two
+    different points in the same forward pass). Combines both residual
+    adds within block k (attention-sublayer and FFN-sublayer) as a
+    single quantity, per the pre-registration's explicit scope statement
+    -- sub-block decomposition is out of scope for Item 3.
+    """
+    h_in = np.stack(block_input_draws)
+    h_out = np.stack(block_output_draws)
+    delta = h_out - h_in
+    per_draw_ratio = np.linalg.norm(delta, axis=1) / (np.linalg.norm(h_in, axis=1) + 1e-8)
+    return float(np.mean(per_draw_ratio))

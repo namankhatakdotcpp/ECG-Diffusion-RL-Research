@@ -65,3 +65,29 @@ def plot_propagation_efficiency(df: pd.DataFrame, fig_dir: Path, variant: str = 
     fig.savefig(path, dpi=200)
     plt.close(fig)
     return path
+
+
+def plot_residual_ratio_vs_block(df: pd.DataFrame, fig_dir: Path) -> Path:
+    """Item 3 addition -- direct analogue of Item 1's own magnitude-vs-layer
+    plot, but for R_k (the within-pass residual-update ratio) instead of
+    Item 1's cross-class output-magnitude delta. Expects columns `block`
+    and `R_k_combined_pooled` (plus optionally `R_k_class_A_pooled`/
+    `R_k_class_B_pooled` for the per-class overlay)."""
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.plot(df["block"], df["R_k_combined_pooled"], marker="o", color="teal", label="Combined (A+B)")
+    if "R_k_class_A_pooled" in df.columns:
+        ax.plot(df["block"], df["R_k_class_A_pooled"], marker="s", color="steelblue",
+                 alpha=0.6, label="Class A", linestyle="--")
+    if "R_k_class_B_pooled" in df.columns:
+        ax.plot(df["block"], df["R_k_class_B_pooled"], marker="^", color="crimson",
+                 alpha=0.6, label="Class B", linestyle="--")
+    ax.set_xlabel("Transformer block index (1 = earliest)")
+    ax.set_ylabel("R_k -- residual update ratio (within-pass)")
+    ax.set_title("Item 3: residual-update ratio vs. block")
+    ax.set_xticks(df["block"])
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    path = fig_dir / "residual_ratio_vs_block.png"
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+    return path
