@@ -368,77 +368,178 @@ Logged as two separate ledger entries (not one entry with two folded-in
 conditions), same 5 class pairs / 3 timesteps / n≥20 draws methodology
 as this corrected Item 1 run, so results are directly comparable.
 
-## Item 2 — Pre-Registration (written before any code runs, per sign-off review)
+## Item 2 — Pre-Registration v2 (revised after a second review found the analytical design was unsound)
 
-Both open items from the last review — falsification criteria and the
-analytical-vs-retrain decision — are resolved here, with real numbers,
-before Item 2 executes.
+The first pre-registration draft was reviewed before implementation (per
+the standing "no code until this is in writing" hold) and found to have
+two critical flaws and one evidentiary-standard gap. All three are fixed
+below by actually reading the model's source, not by assumption.
 
-### Analytical-vs-retrain: analytical first, decided and stated up front
+### Correction to the reviewer's citation, checked directly
 
-**Decision: run the analytical version first.** "Would a scalar gain
-recover the lost magnitude" is answerable directly from the frozen
-checkpoint's existing forward pass — hook each block's output (same
-hooks Item 1 already uses), multiply the relevant hidden-state delta by
-a candidate scalar gain `g` in-flight, and let the *unmodified, frozen*
-weights of the remaining blocks propagate the rescaled signal forward.
-No training, no gradient updates, no GPU cost beyond a few more forward
-passes (~10s, same order as Item 1). This measures whether a scale-only
-correction *could in principle* recover the magnitude and have it
-survive the rest of the network — if the direction is also degrading in
-a way a scale-only correction can't fix, or if the frozen downstream
-blocks simply re-attenuate the correction right back out, that rules out
-the entire LayerScale family (both variants) before any training budget
-is spent. **Only if the analytical check passes for at least one variant
-does Item 2 escalate to an actual gradient-descent retrain** (a real
-learnable gain integrated into the loss, to test whether the rest of the
-network can learn to exploit the corrected magnitude in ways a static
-post-hoc rescaling can't capture) — that retrain is a separate, later
-decision point, not committed to now.
+The review cited a quote attributed to "the project's own Experiment 1
+(embedding initialization scale)" about LayerNorm removing magnitude
+information at every block boundary. **Checked directly: no such
+experiment or reproducible finding exists in this repository.** Per
+`Roadmap/Stage_0_Pipeline_Audit/Reports/Pipeline_Code_Audit.md:604-617`,
+the entire "Investigation Timeline" narrative this quote traces back to
+(embedding-scale experiment, AdaLN-Zero, conditioning-collapse
+percentages, the AFIB-attractor findings) is explicitly flagged as
+**historical narrative, contradicted by direct evidence, not to be cited
+as motivation for Stage 2 priority ordering** — that audit finding
+already exists in this repo and predates this conversation. So the
+specific quote is not something I can treat as established fact.
 
-### Falsification criteria — concrete numbers, not placeholders
+**This does not dissolve the concern — it independently confirms it,
+more rigorously than the quote did.** Read the actual model source,
+`step04_transformer_diffusion.py`, class `TransformerBlock` (line 146),
+`forward()` (lines 171–177):
 
-Baseline values used below are the t=500, cross-pair-averaged numbers
-from Item 1's Results table: L1=0.1237, L2=0.0644 (block1→2 drop =
-0.0593). Both variants are checked against all 3 timesteps individually,
-not just t=500, matching Item 1's own methodology requirement.
+```
+x → norm1=LayerNorm(x) → modulate(norm1, shift1, scale1) → attn → x = x + attn_out   [L173-175]
+x → norm2=LayerNorm(x) → modulate(norm2, shift2, scale2) → ff   → x = x + ff_out     [L176]
+return x   [L177 -- this is what the probe's forward hook captures: post-residual, never a bare LN output]
+```
 
-- **Localized-gain variant** (`stage2_tier0_item2_localized_gain`, one
-  scalar `g_L` applied to the block1→2 transition only): **CONFIRMED**
-  if there exists a `g_L` such that:
-  1. Recovers **≥70%** of the block1→2 magnitude drop: corrected L2
-     magnitude ≥ 0.0644 + 0.70×0.0593 = **0.1059** (≈ requires `g_L` ≳
-     1.64 at t=500; recomputed per-timestep using that timestep's own
-     L1/L2 values, not a single fixed number across timesteps).
-  2. Direction consistency at every downstream layer (2–6) stays **≥
-     0.989** — the floor already empirically established across all 90
-     Item 1 cells (the single lowest observed value was 0.98905, layer
-     6/t=900) — not degraded further by the intervention.
-  3. The correction **holds downstream**: at least 70% of the magnitude
-     recovered at block 2 is still present at block 6 (i.e. the frozen
-     blocks 3–6 don't simply re-attenuate the injected correction back
-     out) — otherwise a static per-transition gain isn't the right fix
-     even if it looks good locally at block 2.
-  If no `g_L` in a reasonable search range (grid over 1.0–3.0) satisfies
-  all three, the localized variant is **REJECTED**, not left ambiguous.
+`shift/scale` come from `self.adaLN(cond)` (L169) — a function of the
+class+timestep embedding only, **independent of the incoming hidden
+state's scale**. Confirmed pre-norm: block N+1's `forward` immediately
+calls its own `norm1(x)` on the raw residual stream handed over from
+block N (no LN at block N's tail) — so **every block's input is
+renormalized fresh**, exactly the mechanism the (unverified-provenance)
+quote described, but now confirmed from source rather than cited from a
+document this project has already flagged as unreliable.
 
-- **Uniform-gain variant** (`stage2_tier0_item2_uniform_gain`, one
-  scalar `g_U` applied identically at every block): compared to the
-  localized variant under a **matched gain budget**, defined as equal
-  total squared log-gain: if the localized variant's passing (or
-  best-found) gain is `g_L*`, the uniform variant uses
-  `g_U = exp(ln(g_L*) / sqrt(6))` so that `6·(ln g_U)² = (ln g_L*)²` —
-  the same total "correction mass," distributed instead of concentrated.
-  **CONFIRMED** if it achieves the same ≥70% block1→2 recovery and ≥0.989
-  consistency floor as the localized variant, at comparable-or-better
-  downstream persistence (criterion 3 above), using this budget-matched
-  gain rather than an independently-tuned one (an independently-tuned
-  uniform gain would not be a fair comparison).
+**Mathematical consequence, provable without running anything:**
+`LayerNorm(g·x) = LayerNorm(x)` **exactly**, for any positive scalar `g`
+applied uniformly to a token's full hidden-state vector — LN's mean/std
+normalization is invariant to uniform positive rescaling of its input.
+**This means the pre-registration v1 design (multiply the whole
+block-output tensor by a scalar `g`) is not just methodologically risky,
+it is analytically guaranteed to be a complete no-op** the instant it
+reaches the next block's `norm1` — zero downstream effect, not
+"attenuated," exactly zero. Running that version would have produced a
+false negative indistinguishable from "the LayerScale hypothesis is
+wrong," when it would actually have been "the intervention was erased by
+construction." Confirms the review's concern was correct and shows
+precisely why.
+
+### Corrected intervention design
+
+A scalar multiply on the *whole* residual-stream vector is dead on
+arrival. What survives LN is a change to the vector's **shape/direction
+composition**, not its uniform scale — so the intervention must target
+the class-conditioning-specific *component* of the hidden state, not the
+whole tensor:
+
+At the block1→2 transition, Item 1's own two forward passes per draw
+(`feat_a`, `feat_b`, at block 1's output) already give
+`delta = feat_b - feat_a` — the class-conditioning direction. The
+intervention constructs `feat_b_corrected = feat_a + g·delta` (amplifying
+only the conditioning-specific component, leaving the class-A reference
+untouched) and **feeds this corrected tensor into block 2 in place of
+the original `feat_b`**, implemented as a forward hook that returns a
+replacement tensor (PyTorch forward hooks may substitute the module's
+output for the rest of the forward pass) — no offline recomputation,
+the actual computation graph is modified live, then blocks 2–6 run
+unmodified (frozen weights) on the corrected input. This is still
+purely analytical (no gradients, no training) but is no longer
+guaranteed-vacuous the way a uniform scalar multiply is.
+
+**Uniform variant applies the same delta-amplification at every
+block's transition** (not just block1→2): at each block k=1..5, hook its
+output, compute that block's own `delta_k = feat_b_k - feat_a_k`,
+construct `feat_a_k + g_k·delta_k`, and feed the corrected tensor into
+block k+1 — a cumulative live intervention through the whole forward
+pass, with `g_k` chosen per the budget-matching scheme below.
+
+### Recovery measured at block 6, not the injection point (Critical Issue 2 — fixed)
+
+**Recovery is defined and measured entirely at the final block (block
+6)'s output, after propagating through the frozen, unmodified blocks
+3–6.** Measuring at the injection point (block 2, immediately after
+substitution) would be close to tautological — the gain is chosen to
+produce exactly that change, by construction, and would say nothing
+about whether it survives. The only meaningful question is whether
+block 6's magnitude/direction-consistency, computed from the
+gain-corrected forward pass, differs from the same quantities computed
+from the uncorrected baseline forward pass.
+
+### Falsification criteria — restated on pooled statistics, matching Item 1's own evidentiary bar (Major Issue 3 — fixed)
+
+The v1 draft used a single (pair=0→1, t=500) number. Item 1 itself was
+rightly held to a 5-pair × 3-timestep pooled standard before being
+accepted as SUPPORTED — Item 2 is held to the same bar, not a lower one.
+**Pooled (n=15 = 5 pairs × 3 timesteps) statistics, computed directly
+from Item 1's own raw data:** L1 mean = 0.1346 ± 0.0342, L2 mean =
+0.0712 ± 0.0188, block1→2 drop = 0.0635 ± 0.0204.
+
+- **Localized-gain variant** (`stage2_tier0_item2_localized_gain`):
+  **CONFIRMED** if there exists a `g_L` such that, evaluated at **block
+  6**, pooled across all 5 pairs × 3 timesteps:
+  1. Block 6 magnitude in the gain-corrected forward pass recovers
+     **≥70%** of the pooled block1→2 drop relative to the uncorrected
+     block 6 baseline — i.e. `mag6_corrected − mag6_baseline ≥
+     0.70 × 0.0635 = 0.0445` (pooled mean; evaluated per-pair-per-timestep,
+     not a single fixed number, exactly as Item 1's own tables report
+     per-condition detail alongside the pooled figure).
+  2. Direction consistency at every downstream layer (2–6) in the
+     corrected pass stays **≥0.989** — Item 1's own empirically observed
+     floor across all 90 cells (lowest value: 0.98905, layer 6/t=900) —
+     not degraded further by the intervention.
+  3. This is checked at block 6 specifically **because** it already
+     encodes "survives the frozen downstream blocks" — there is no
+     separate "holds downstream" criterion needed once recovery is
+     defined at the final block rather than the injection point (this
+     simplifies, and corrects, the v1 draft's redundant criterion 3).
+  If no `g_L` in a reasonable search range (grid over 1.0–4.0, since the
+  effective range needed may differ now that the intervention targets
+  the delta rather than the whole vector) satisfies both 1 and 2 across
+  the pooled conditions, the localized variant is **REJECTED**.
+
+- **Uniform-gain variant** (`stage2_tier0_item2_uniform_gain`): compared
+  under a **matched gain budget** — equal total squared log-gain, i.e.
+  if the localized variant's passing (or best-found) gain is `g_L*`, the
+  uniform variant applies `g_k = exp(ln(g_L*)/√5)` at each of the 5
+  transitions (`5·(ln g_k)² = (ln g_L*)²`), same total "correction mass"
+  distributed instead of concentrated. **CONFIRMED** if it achieves the
+  same ≥70% pooled recovery and ≥0.989 consistency floor at block 6.
+  **Stated limitation, not hidden as a neutral choice (per reviewer's
+  minor note):** this equal-per-block split is fixed by construction,
+  not fit or optimized — it necessarily spends some of the budget on
+  transitions (block3→4, block4→5) that Item 1 found no significant
+  effect at, which structurally disadvantages the uniform variant
+  relative to a version that could concentrate its budget on the two
+  transitions Item 1 *did* find significant (block1→2, block5→6). This
+  bias is acknowledged up front, not discovered after the uniform
+  variant underperforms.
 
 - **Both fail** → an informative negative result for the LayerScale
   family at the analytical (pre-training) stage, written up with the
   same standard as the original CFG rejection in Stage 1 — a real
   finding, not reframed as partial support.
+
+- **70% threshold provenance, stated plainly (per reviewer's minor
+  note):** this is a round-number judgment call, not derived from a
+  power analysis or prior LayerScale/DiT literature specific to this
+  architecture. Flagging this honestly rather than presenting it as if
+  it were derived, consistent with this project's standing discipline.
+
+### Analytical-vs-retrain: analytical first, decided and stated up front
+
+**Decision unchanged from v1: run the analytical (hook-substitution)
+version first**, now correctly designed per the above. No training, no
+gradient updates — a few extra forward passes per (pair, timestep, gain
+value) grid point, same order of cost as Item 1 (~seconds, not GPU
+training time). If the analytical check shows the delta-amplification
+can't reach the recovery target while respecting the consistency floor
+at block 6, that rules out the entire LayerScale family (both variants)
+before any training budget is spent. **Only if the analytical check
+passes for at least one variant does Item 2 escalate to an actual
+gradient-descent retrain** (a real learnable gain integrated into the
+loss, to test whether the rest of the network can learn to exploit the
+corrected magnitude in ways a static post-hoc substitution can't capture)
+— that retrain is a separate, later decision point, not committed to now.
 
 ### Scope
 
