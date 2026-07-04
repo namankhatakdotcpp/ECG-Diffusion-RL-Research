@@ -211,6 +211,50 @@ matching `Stage2_Evidence_Matrix.md`'s calibration.
     specific architectural direction (e.g. investigating `final_norm`/
     `unproj`).
 
+### Addendum (2026-07-05) -- Stage 3 Phase 0 findings on 5b's dilution hypothesis
+
+Stage 3 Phase 0 Tasks 0.1 and 0.2 (`Stage3_Phase0_PreRegistration.md`,
+locked thresholds; full raw output at
+`Roadmap/Stage_3_Architecture_Improvements/Outputs/stage3_phase0_task0_1_dilution_ratio/task0_1_raw.json`
+and `.../stage3_phase0_task0_2_final_norm_unproj_ablation/task0_2_raw.json`)
+directly tested 5b's dilution mechanism, resolving it from HYPOTHESIS to
+a measured, unified metric for the first time.
+
+**Task 0.1 (dilution-ratio test) -- SUPPORTED.** `conditioning_delta(block_k)
+/ total_output_norm(block_k)`, computed directly (reusing Item 1's own
+`magnitude_and_consistency` pooling convention, not reimplemented),
+declines from 0.135 (block 1) to 0.043 (block 6) -- a 67.9% net
+decline, Wilcoxon signed-rank block1-vs-block6 p=6.1e-05 (n=15 cells),
+well clear of the pre-registered thresholds (p<0.05 and decline>=30%
+required for SUPPORTED). **5b's dilution mechanism is now a verified
+finding, not a hypothesis** -- upgrade from Low-to-Moderate to
+**High confidence** for the specific claim "conditioning's proportional
+influence, as a fraction of total output norm, declines across blocks
+1-6."
+
+**Task 0.2 (final_norm/unproj causal ablation) -- IMPLICATES, but
+borderline.** Conditioning-specific signal retention through
+`final_norm`->`unproj` (`retention_ratio_conditioning` = 0.038) is
+0.41x the whole-tensor retention rate through the same two layers
+(`retention_ratio_whole` = 0.093) -- below the pre-registered 0.5x
+threshold, but not by a wide margin (0.41 vs. 0.5), unlike Task 0.1's
+clean margin. Reported as a real but **moderate-confidence** result,
+not as decisively as Task 0.1's.
+
+**Important scope correction to this Decision Report's own Sec. 6
+Recommendation 5 and `Stage3_Roadmap.md` Decision Gate A:** both were
+framed as testing which ONE of two candidate mechanisms (block-level
+dilution vs. final_norm/unproj suppression) applies, implicitly
+anticipating a single winner. **Real data shows both effects present
+simultaneously** -- they are not mutually exclusive alternatives.
+Gate A's candidate-selection logic is corrected accordingly: the
+gain-focused candidates (Phase 1's first five) remain justified by
+Task 0.1's strong result, **and** the 6th (`final_norm`/`unproj`)
+candidate is added alongside them on the strength of Task 0.2's
+result, not substituted in its place. Task 0.2's borderline margin is
+carried forward as a reason to treat that 6th candidate as lower
+initial priority than the gain-focused candidates, not to exclude it.
+
 ## 5. What NOT to pursue
 
 Patterns that were tested and did not hold up, or claims that should
