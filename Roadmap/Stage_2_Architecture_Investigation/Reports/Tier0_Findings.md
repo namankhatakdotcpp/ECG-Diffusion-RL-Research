@@ -558,6 +558,19 @@ mismatch means the substitution pathway itself has a bug, and every
 downstream number would be contaminated by it, exactly the discipline
 already applied to the `--timestep-frac` regression test in Item 1.
 
+**This test is run independently for the localized hook (Phase A) and
+again, separately, for the uniform hook (Phase B) — not assumed to
+carry over.** The uniform hook is structurally similar but not
+identical (it substitutes at 5 transitions cumulatively rather than 1,
+with each later substitution depending on the already-corrected
+upstream trajectory rather than the original class-B path) — a bug
+specific to the cumulative bookkeeping would not necessarily be caught
+by the localized hook's identity test. "It's just a simpler version of
+the same hook" is exactly the reasoning this second, independent check
+exists to rule out, particularly since it lands late in Item 2's
+implementation, when time pressure to finish tends to erode review
+discipline.
+
 ### 7. Gain strategy — swept grid, fixed before implementation, not chosen post-hoc
 
 **Option A (sweep), selected:** `g ∈ {1.0, 1.25, 1.5, 2.0, 3.0, 5.0}`,
@@ -609,6 +622,20 @@ variants. **70% threshold provenance, stated plainly:** this is an
 engineering judgment call, not derived from a power analysis or prior
 LayerScale/DiT literature specific to this architecture — flagged
 honestly rather than presented as derived.
+
+**Closing an ambiguity flagged in review, before it can be litigated at
+analysis time:** the decision table is applied **per gain value
+independently, not to the swept curve as a whole** — there is no
+monotonicity or unanimity requirement across the grid. Concretely: if
+`g=2.0` achieves 71% recovery with the direction floor intact, and
+`g=1.5` in the same sweep only achieves 68%, the pre-registered answer
+is **SUPPORTED**, driven by `g=2.0` — the grid's purpose is to find
+whether *any* gain in the locked set clears the bar (and to characterize
+the curve for the propagation-efficiency diagnostic, §5), not to require
+every grid point to pass. This is already implicit in §9's "whichever
+`g` in the locked grid produces the largest recovery without violating
+the direction floor" wording above, but is stated as an explicit rule
+here so it cannot be re-litigated after seeing results.
 
 **Uniform variant** is evaluated against the same table, using the
 budget-matched gain from §8 (not an independently-tuned gain).
