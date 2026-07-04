@@ -166,6 +166,9 @@ def main() -> None:
     # disk I/O / CPU-side tensor conversion and is not expected to speed up
     # from GPU compute alone.
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    log.info(f"Device: {device} (torch.cuda.is_available()={torch.cuda.is_available()}"
+             + (f", torch.cuda.get_device_name(0)={torch.cuda.get_device_name(0)}"
+                if device == "cuda" else "") + ")")
     model = loaded.model.to(device)
     d = cfg.diffusion
     p_uncond = float(getattr(d, "p_uncond", 0.10))
@@ -192,10 +195,14 @@ def main() -> None:
     torch.manual_seed(9999)
     grad_norms_repro_2, _ = run_one_draw(model, diffusion, batch_x, batch_cls, device, p_uncond)
 
-    repro_match = all(
-        abs(grad_norms_repro_1[k] - grad_norms_repro_2[k]) < 1e-9 for k in grad_norms_repro_1
-    )
-    log.info(f"Zero-grad reproducibility check: {'PASS' if repro_match else 'FAIL'}")
+    repro_diffs = {k: abs(grad_norms_repro_1[k] - grad_norms_repro_2[k]) for k in grad_norms_repro_1}
+    repro_max_diff_name = max(repro_diffs, key=repro_diffs.get)
+    repro_max_diff = repro_diffs[repro_max_diff_name]
+    repro_match = repro_max_diff < 1e-9
+    log.info(f"Zero-grad reproducibility check: {'PASS' if repro_match else 'FAIL'} "
+             f"(max abs diff across {len(repro_diffs)} tensors = {repro_max_diff:.3e}, "
+             f"at '{repro_max_diff_name}'; pass1={grad_norms_repro_1[repro_max_diff_name]:.10f}, "
+             f"pass2={grad_norms_repro_2[repro_max_diff_name]:.10f}; threshold=1e-9)")
     if not repro_match:
         print("[STOP] Reproducibility check FAILED -- gradient accumulation bleed suspected. "
               "Aborting per pre-registration's STOP CONDITION. Do not trust any sweep numbers.")
@@ -275,10 +282,18 @@ def main() -> None:
         }
 
     raw = {
+        "device": device,
+        "cuda_available": torch.cuda.is_available(),
+        "cuda_device_name": torch.cuda.get_device_name(0) if device == "cuda" else None,
         "checksum_before": checksum_before,
         "checksum_after": checksum_after,
         "weights_unchanged": weights_unchanged,
         "reproducibility_check_passed": repro_match,
+        "reproducibility_max_abs_diff": repro_max_diff,
+        "reproducibility_max_abs_diff_tensor": repro_max_diff_name,
+        "reproducibility_pass1_value": grad_norms_repro_1[repro_max_diff_name],
+        "reproducibility_pass2_value": grad_norms_repro_2[repro_max_diff_name],
+        "reproducibility_threshold": 1e-9,
         "n_draws": N_DRAWS,
         "fixed_timesteps": FIXED_TIMESTEPS,
         "primary_losses": primary_losses,
@@ -299,7 +314,7 @@ def main() -> None:
     result = {
         "class_emb_mean_grad_norm": class_emb_mean,
         "class_emb_std_grad_norm": pooled_std["class_emb.weight"],
-        "percentile_rank_within_other_83_tensors": percentile_rank,
+        "percentile_rank_within_other_tensors": percentile_rank,
         "n_other_tensors": len(other_means),
         "other_tensors_min": min(other_means),
         "other_tensors_median": float(np.median(other_means)),

@@ -123,8 +123,17 @@ zero-grad/no-accumulation check (STOP CONDITION if it fails).
 ## Design question 3: comparison basis
 
 **Primary: percentile rank of `class_emb.weight`'s pooled mean `||grad||`
-within the full distribution of all 83 other individual named-parameter
+within the full distribution of all 95 other individual named-parameter
 tensors' pooled mean `||grad||`** (per-tensor, NOT bucketed by type).
+(Corrected count: the model has 96 named-parameter tensors total -- 8
+non-block tensors [`patch_embed.*`, `time_mlp.*`, `class_emb.weight`] +
+84 block tensors [14 per block x 6 blocks] + 4 tail tensors
+[`final_norm.*`, `unproj.*`] -- so 95 others, not 83. The original "83"
+was this document's own arithmetic error, mistaking the 84-tensor
+per-block subtotal for the grand total; the GPU run's actual computed
+value, `n_other_tensors=95`, is correct and was not affected by this
+documentation error, since the code counts `len(other_means)` at
+runtime rather than using a hardcoded number.)
 Chosen over bucketing (e.g. "all attention params" as one number)
 because averaging over the 6 blocks' worth of a given type would
 obscure block-specific heterogeneity -- exactly the kind of information
