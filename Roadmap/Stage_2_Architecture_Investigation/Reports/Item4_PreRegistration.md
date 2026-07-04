@@ -221,6 +221,24 @@ component is disk I/O / CPU-side tensor conversion and is not expected
 to speed up from GPU compute alone. No optimizer step, no weight
 updates, either way.
 
+## Amendment (approved before the final rerun -- N_DRAWS 10 -> 30)
+
+Runtime on CUDA was substantially lower than estimated during planning
+(~0.5s/draw, confirmed by the first GPU run's log timestamps -- 10
+primary draws completed in ~5 seconds). **Before final analysis, the
+number of stochastic draws was increased from 10 to 30 (applied to both
+the primary and secondary/fixed-timestep designs) to reduce estimator
+variance in the percentile-rank statistic** -- the percentile rank is
+inherently a sampled quantity (each draw uses a fresh random real-data
+batch), and a 10-draw estimate carries more sampling noise than a
+30-draw one, at a marginal GPU cost of ~10-15 seconds. **No hypotheses,
+metrics, decision criteria, loss definition, hooks, timestep choices,
+checkpoint, or filtering logic were changed** -- only the draw count,
+justified purely by the cost/precision tradeoff revealed once real CUDA
+runtime was measured (this is the same class of amendment as Item 6's
+post-hoc CI computation: improving the precision of an already-locked
+measurement, not changing what is being measured).
+
 ## Report structure
 
 Architectural question first ("was the class embedding's gradient

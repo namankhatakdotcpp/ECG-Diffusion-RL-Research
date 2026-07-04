@@ -51,7 +51,8 @@ FIG_DIR = (
     / "stage2_tier0_item4_gradient_competitiveness"
 )
 
-N_DRAWS = 10
+N_DRAWS = 30  # amended from 10 after measuring actual CUDA runtime (~0.5s/draw) -- see
+              # Item4_PreRegistration.md's "Amendment" section for the full justification
 FIXED_TIMESTEPS = [100, 500, 900]
 
 TYPE_BUCKETS = {
@@ -166,9 +167,11 @@ def main() -> None:
     # disk I/O / CPU-side tensor conversion and is not expected to speed up
     # from GPU compute alone.
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    log.info(f"Device: {device} (torch.cuda.is_available()={torch.cuda.is_available()}"
-             + (f", torch.cuda.get_device_name(0)={torch.cuda.get_device_name(0)}"
-                if device == "cuda" else "") + ")")
+    log.info(f"Device: {device} | torch.cuda.is_available()={torch.cuda.is_available()}"
+             + (f" | GPU name={torch.cuda.get_device_name(0)}"
+                f" | CUDA version={torch.version.cuda}"
+                f" | GPU total memory={torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB"
+                if device == "cuda" else " | (CPU fallback -- CUDA not available on this machine)"))
     model = loaded.model.to(device)
     d = cfg.diffusion
     p_uncond = float(getattr(d, "p_uncond", 0.10))
@@ -270,6 +273,27 @@ def main() -> None:
     bucket_summary = {b: {"mean": float(np.mean(vs)), "n_tensors": len(vs)}
                        for b, vs in bucket_summary.items()}
 
+    # Explicit reconciliation check (not just prose reasoning): bucket_summary
+    # includes class_emb.weight (for descriptive completeness, in the "embeddings"
+    # bucket), while n_other_tensors (used for the percentile-rank comparison set)
+    # explicitly excludes it. These must differ by exactly 1, and that 1 must be
+    # class_emb.weight -- verified here at runtime, not assumed.
+    bucket_total = sum(v["n_tensors"] for v in bucket_summary.values())
+    n_other = len(other_means)
+    reconciliation_ok = (bucket_total == n_other + 1)
+    log.info(f"Bucket-count reconciliation: sum(bucket n_tensors)={bucket_total}, "
+             f"n_other_tensors={n_other}, difference={bucket_total - n_other} "
+             f"(must be exactly 1, attributable to class_emb.weight being included in "
+             f"the 'embeddings' bucket for display but excluded from the percentile-rank "
+             f"comparison set) -- {'PASS' if reconciliation_ok else 'FAIL'}")
+    if not reconciliation_ok:
+        print(f"[STOP] Bucket-count reconciliation FAILED: sum(bucket n_tensors)="
+              f"{bucket_total} != n_other_tensors({n_other}) + 1. This means the "
+              f"assumed relationship between the bucket display and the percentile-rank "
+              f"comparison set no longer holds -- investigate before trusting any "
+              f"percentile-rank number.")
+        return
+
     secondary_summary = {}
     for t_val in FIXED_TIMESTEPS:
         sm = {name: float(np.mean(vals)) for name, vals in secondary_grad_norms[t_val].items()}
@@ -285,6 +309,9 @@ def main() -> None:
         "device": device,
         "cuda_available": torch.cuda.is_available(),
         "cuda_device_name": torch.cuda.get_device_name(0) if device == "cuda" else None,
+        "cuda_version": torch.version.cuda if device == "cuda" else None,
+        "cuda_total_memory_gb": (torch.cuda.get_device_properties(0).total_memory / 1e9
+                                  if device == "cuda" else None),
         "checksum_before": checksum_before,
         "checksum_after": checksum_after,
         "weights_unchanged": weights_unchanged,
@@ -320,6 +347,12 @@ def main() -> None:
         "other_tensors_median": float(np.median(other_means)),
         "other_tensors_max": max(other_means),
         "type_bucket_summary": bucket_summary,
+        "bucket_count_reconciliation": {
+            "sum_bucket_n_tensors": bucket_total,
+            "n_other_tensors": n_other,
+            "difference": bucket_total - n_other,
+            "difference_is_class_emb_weight": reconciliation_ok,
+        },
         "secondary_fixed_timestep_summary": secondary_summary,
     }
     with open(OUT_DIR / "gradient_probe_result.json", "w") as f:
