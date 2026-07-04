@@ -147,6 +147,11 @@ def main() -> None:
         "mean_delta_block6_ablation": mean_delta_6,
         "mean_delta_block3_valley_ablation": mean_delta_3,
         "ratio_delta6_to_delta3": mean_delta_6 / mean_delta_3 if mean_delta_3 > 1e-12 else None,
+        "ratio_formula": ("mean(delta_6_i for i in all 600 obs) / mean(delta_3_i for i in all 600 obs) "
+                          "-- i.e. POOL FIRST (flat mean across all pair x timestep x draw x class "
+                          "observations, not per-cell), THEN ratio. NOT the mean of 600 per-observation "
+                          "ratios delta_6(i)/delta_3(i), which would be unstable wherever delta_3(i) "
+                          "is near zero for a specific draw."),
         "n_observations": len(delta_6_list),
     }
 

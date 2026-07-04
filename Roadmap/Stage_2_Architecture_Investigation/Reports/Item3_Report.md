@@ -79,6 +79,17 @@ ablation at the valley block.
 | Mean change from ablating block 3 (valley) | 1.714 |
 | Ratio | 3.24x |
 
+**Ratio formula, stated explicitly (pool first, then ratio -- not a mean
+of per-observation ratios):** each of the 600
+individual (pair, timestep, draw, class) observations contributes one
+`delta_6(i) = ||final_norm(baseline_i) - final_norm(ablated_block_6_i)||`
+and one `delta_3(i)` (same formula, block 3). The two
+columns above are `mean_i(delta_6(i))` and `mean_i(delta_3(i))` --
+flat means across all 600 observations, not
+per-cell -- and the ratio is `mean_i(delta_6(i)) / mean_i(delta_3(i))`,
+**not** `mean_i(delta_6(i)/delta_3(i))` (the latter would be unstable
+wherever `delta_3(i)` is near zero for a specific draw).
+
 **CONFIRMED by causal ablation: ablating block 6's residual update changes final_norm's output by 5.555 on average, vs. 1.714 for ablating the valley block (3) -- a 3.24x larger effect. Block 6's larger pre-normalization residual DOES translate to proportionally greater post-normalization influence -- this is measured directly via ablation, not inferred from pre-norm ratios.**
 
 (Pre-normalization context, for reference only -- not the basis for the

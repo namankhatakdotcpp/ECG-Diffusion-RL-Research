@@ -177,6 +177,17 @@ ablation at the valley block.
 | Mean change from ablating block {valley_block} (valley) | {ablation['mean_delta_block3_valley_ablation']:.3f} |
 | Ratio | {ratio_delta:.2f}x |
 
+**Ratio formula, stated explicitly (pool first, then ratio -- not a mean
+of per-observation ratios):** each of the {ablation['n_observations']}
+individual (pair, timestep, draw, class) observations contributes one
+`delta_6(i) = ||final_norm(baseline_i) - final_norm(ablated_block_{peak_block}_i)||`
+and one `delta_3(i)` (same formula, block {valley_block}). The two
+columns above are `mean_i(delta_6(i))` and `mean_i(delta_3(i))` --
+flat means across all {ablation['n_observations']} observations, not
+per-cell -- and the ratio is `mean_i(delta_6(i)) / mean_i(delta_3(i))`,
+**not** `mean_i(delta_6(i)/delta_3(i))` (the latter would be unstable
+wherever `delta_3(i)` is near zero for a specific draw).
+
 **{ablation_finding}**
 
 (Pre-normalization context, for reference only -- not the basis for the
