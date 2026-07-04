@@ -72,6 +72,29 @@ class OverrideHook:
         return out
 
 
+class CorrectionHook:
+    """Given a precomputed, never-modified class-A reference tensor
+    (`cached_A`) and a fixed gain, returns `cached_A + gain*(out - cached_A)`
+    every time it fires. This is the live-substitution primitive shared by
+    both variants: the localized variant (Item 2A) attaches ONE instance to
+    the single target block; the uniform variant (Item 2B) attaches FIVE
+    independent instances, one per block 1-5, each with its own cached_A
+    (that block's own class-A raw output) and its own per-block gain `g_k` --
+    cumulative, since block k+1's hook then sees the already-corrected
+    trajectory arriving from block k, not the original class-B path (Item 2
+    v3 Sec. 3). Added for Item 2B; extends common/ rather than forking a
+    local copy, per the standing instruction not to reimplement hooks
+    independently per item."""
+
+    def __init__(self, cached_A: torch.Tensor, gain: float):
+        self.cached_A = cached_A
+        self.gain = gain
+
+    def __call__(self, module, inp, out):
+        delta = out - self.cached_A
+        return self.cached_A + self.gain * delta
+
+
 class LocalizedGainHook:
     """Forward hook on a single target block implementing the cached-mode
     (class-A/class-B) substitution directly, as an alternative calling

@@ -11,10 +11,30 @@ silently; any change is a new pre-registration revision, not a patch here.
 
 from __future__ import annotations
 
+import math
+
 GAIN_GRID = [1.0, 1.25, 1.5, 2.0, 3.0, 5.0]  # locked, Item 2 v3 Sec. 7
 TIMESTEPS = [100, 500, 900]  # matches Item 1's own baseline + sensitivity reruns
 K_DRAWS = 20
+N_UNIFORM_BLOCKS = 5  # blocks 1-5 (0-indexed 0..4); block 6 is where recovery is measured, never hooked
 
 
 def class_pairs(n_classes: int) -> list[tuple[int, int]]:
     return [(0, cls_b) for cls_b in range(1, n_classes)]
+
+
+def uniform_per_block_gain(nominal_gain: float, n_blocks: int = N_UNIFORM_BLOCKS) -> float:
+    """Item 2's budget-matching fairness rule for the uniform variant
+    (Tier0_Findings.md v2, "Falsification criteria" section; carried
+    forward unchanged into v3 Sec. 8): equal total squared log-gain
+    between the localized variant's single injection and the uniform
+    variant's `n_blocks` injections --
+
+        n_blocks * (ln g_k)^2 = (ln g_L)^2   =>   g_k = g_L^(1/sqrt(n_blocks))
+
+    where `g_L` is the nominal grid value (playing the role of the
+    localized variant's gain at that sweep point) and `g_k` is the actual
+    gain applied at each of the `n_blocks` uniform-variant transitions.
+    At nominal_gain=1.0 this reduces to g_k=1.0 exactly (required for the
+    uniform hook's own identity-regression test to be a true no-op)."""
+    return nominal_gain ** (1.0 / math.sqrt(n_blocks))
