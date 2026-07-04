@@ -65,6 +65,34 @@ def register_block0_input_hook(model) -> tuple[object, dict]:
     return handle, captured
 
 
+def register_attention_input_hooks(model) -> tuple[list, dict]:
+    """Item 6 addition. Captures the FULL per-token tensor each block's
+    `self.attn` module receives as its query/key/value input -- this is
+    `h = modulate(self.norm1(x), shift1, scale1)` (step04_transformer_
+    diffusion.py:173-174, `h, _ = self.attn(h, h, h)`), i.e. the adaLN-
+    modulated, normalized representation attention actually operates on,
+    NOT the raw block input. `TransformerBlock.forward` discards
+    `self.attn`'s attention weights (`h, _ = self.attn(h, h, h)`), so
+    there is no way to obtain per-head attention weights from the
+    model's own forward pass as written -- the caller must replay
+    `block.attn(h, h, h, need_weights=True, average_attn_weights=False)`
+    a second time using the tensor this hook captures, in eval mode (no
+    dropout), to get per-head weights without altering the model or
+    duplicating its forward logic. Captures the FULL tensor (not mean-
+    pooled), since attention needs the real per-token sequence."""
+    captured: dict[int, torch.Tensor] = {}
+    handles = []
+
+    def _make_hook(layer_idx: int):
+        def _pre_hook(module, args):
+            captured[layer_idx] = args[0].detach().clone()
+        return _pre_hook
+
+    for i, block in enumerate(model.blocks):
+        handles.append(block.attn.register_forward_pre_hook(_make_hook(i)))
+    return handles, captured
+
+
 class RawCaptureHook:
     """Captures a block's raw, full per-token output tensor (1, seq_len, D)
     -- not mean-pooled. Used to obtain H_k^A(i)/H_k^B(i) so a substitution

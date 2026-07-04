@@ -112,3 +112,31 @@ def plot_scale_shift_fraction_vs_block(df: pd.DataFrame, fig_dir: Path) -> Path:
     fig.savefig(path, dpi=200)
     plt.close(fig)
     return path
+
+
+def plot_attention_entropy_vs_block(df: pd.DataFrame, fig_dir: Path, threshold: float = 0.05) -> Path:
+    """Item 6 addition -- entropy vs block, class A/B overlaid, plus
+    the |diff| on a secondary axis with the locked class-blindness
+    threshold marked. Expects columns `block`, `entropy_class_A`,
+    `entropy_class_B`, `entropy_diff`."""
+    fig, ax1 = plt.subplots(figsize=(6.5, 4.2))
+    ax1.plot(df["block"], df["entropy_class_A"], marker="o", color="steelblue", label="Class A (NORM)")
+    ax1.plot(df["block"], df["entropy_class_B"], marker="s", color="crimson",
+              alpha=0.8, linestyle="--", label="Class B (pooled)")
+    ax1.set_xlabel("Transformer block index (1 = earliest)")
+    ax1.set_ylabel("Attention entropy H (nats)")
+    ax1.set_xticks(df["block"])
+    ax1.legend(fontsize=8, loc="upper right")
+
+    ax2 = ax1.twinx()
+    ax2.bar(df["block"], df["entropy_diff"], alpha=0.25, color="gray", label="|diff|")
+    ax2.axhline(threshold, linestyle=":", color="black", alpha=0.7, label=f"Threshold ({threshold})")
+    ax2.set_ylabel("|entropy diff| (nats)")
+    ax2.legend(fontsize=8, loc="upper left")
+
+    ax1.set_title("Item 6: attention entropy vs. block, class A vs. B")
+    fig.tight_layout()
+    path = fig_dir / "attention_entropy_vs_block.png"
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+    return path
