@@ -14,13 +14,56 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from utils import load_config, get_logger
 from utils.backup import snapshot_before_write
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _git_commit_hash(root: Path) -> str:
+    proc = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=str(root),
+        capture_output=True, text=True,
+    )
+    return proc.stdout.strip() if proc.returncode == 0 else "unknown"
+
+
+def write_baseline_manifest(cfg, root: Path) -> Path:
+    """Record which checkpoint this pipeline run actually evaluated.
+
+    Without this, "checksum-verified baseline" (Stage3_Roadmap.md Sec. 6)
+    is a claim, not a guarantee -- a checkpoint silently overwritten
+    between runs would otherwise be undetectable from run_all.py's
+    output alone (same failure mode as Stage 1's EMA checkpoint mixup).
+    """
+    ckpt_path = Path(cfg.paths.outputs.models) / "diffusion_best.pt"
+    manifest = {
+        "checkpoint_path": str(ckpt_path),
+        "checkpoint_sha256": _sha256_file(ckpt_path) if ckpt_path.exists() else None,
+        "checkpoint_exists": ckpt_path.exists(),
+        "git_commit": _git_commit_hash(root),
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    out_dir = Path(cfg.paths.outputs.results).parent / "mentor_review"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "baseline_manifest.json"
+    with open(out_path, "w") as f:
+        json.dump(manifest, f, indent=2)
+    return out_path
 
 STAGES = [
     ("1. Dataset audit",                  ["-m", "mentor_eval.dataset_audit"]),
@@ -57,6 +100,9 @@ def main() -> None:
     from mentor_eval.write_summary import write_summary
     write_summary(cfg)
     print("\n✓ SUMMARY.md (re)generated under outputs/mentor_review/")
+
+    manifest_path = write_baseline_manifest(cfg, root)
+    print(f"✓ baseline_manifest.json written to {manifest_path}")
 
 
 if __name__ == "__main__":
