@@ -38,3 +38,18 @@ optimizer -- their gain-parameter values partially reflect this competing
 pressure between task gradient and unnecessary decay. S3-004 onward
 trained under the fix. This caveat must be carried into any comparison
 table or report that cites S3-002/S3-003's numbers.
+
+## S3-002 retrain decision policy (pre-committed 2026-07-05, before Wave 1/2 results are known)
+
+S3-002 (LayerScale) will be retrained under the corrected optimizer
+(post-0294330/432395c) ONLY if one of the following holds once
+S3-004 and S3-005 results are in:
+  (a) S3-002's original (pre-fix) run already beats baseline on >=1
+      primary metric despite training under the weight-decay bug, OR
+  (b) Neither S3-004 nor S3-005 improves on baseline on any primary
+      metric, making LayerScale worth a clean re-test before ruling
+      out gain-based approaches entirely.
+
+This policy is written down now, before Wave 2's results are known, to
+prevent the retrain decision being made reactively in a way that could
+be biased toward a preferred outcome.
