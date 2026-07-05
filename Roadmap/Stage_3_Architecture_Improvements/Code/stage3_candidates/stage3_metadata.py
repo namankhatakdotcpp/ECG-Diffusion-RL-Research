@@ -13,7 +13,7 @@ Schema (Results/<S3-XXX>/metadata.json):
     config_sha256      -- sha256(config.yaml) at write time
     checkpoint_sha256  -- sha256(best checkpoint), null until training produces one
     start_time         -- UTC ISO timestamp, set once, at "queued"->"training" transition
-    status             -- one of: queued, training, done, killed
+    status             -- one of: queued, training, done, killed, train_failed, eval_failed
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from mentor_eval.run_all import _sha256_file, _git_commit_hash  # noqa: E402
 RESULTS_ROOT = REPO_ROOT / "Roadmap" / "Stage_3_Architecture_Improvements" / "Results"
 CONFIG_PATH = REPO_ROOT / "config.yaml"
 
-VALID_STATUSES = {"queued", "training", "done", "killed"}
+VALID_STATUSES = {"queued", "training", "done", "killed", "train_failed", "eval_failed"}
 
 
 def _metadata_path(run_id: str) -> Path:

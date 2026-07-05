@@ -40,7 +40,7 @@ if str(STAGE2_CODE_DIR) not in sys.path:
 
 from common.io import load_config, get_logger  # noqa: E402
 from common_train import train_variant, RESULTS_ROOT  # noqa: E402
-from stage3_metadata import write_metadata  # noqa: E402
+from stage3_metadata import write_metadata, _metadata_path  # noqa: E402
 
 VARIANT_BY_RUN_ID = {
     "S3-001": "baseline",
@@ -62,6 +62,12 @@ PRIMARY_METRIC_KEY = "accuracy"
 
 
 def run_candidate(run_id: str) -> None:
+    """Train + evaluate one candidate. Train failures are FATAL (re-raised --
+    stops the queue, per the existing STOP CONDITION semantics: an unknown
+    training failure is worth halting on). Eval failures are NOT fatal --
+    marked "eval_failed" in metadata.json and swallowed here, so a broken
+    evaluator on one candidate can never block unrelated candidates' training
+    later in the same queue invocation."""
     variant = VARIANT_BY_RUN_ID[run_id]
     cfg = load_config()
     log = get_logger(f"queue_{run_id}", cfg=cfg)
@@ -72,12 +78,12 @@ def run_candidate(run_id: str) -> None:
     try:
         train_variant(cfg, log, variant=variant, run_id=run_id)
     except Exception:
-        write_metadata(run_id, variant, status="killed")
+        write_metadata(run_id, variant, status="train_failed")
         raise
 
     ckpt_path = RESULTS_ROOT / run_id / "checkpoints" / f"{run_id}_best.pt"
     if not ckpt_path.exists():
-        write_metadata(run_id, variant, status="killed")
+        write_metadata(run_id, variant, status="train_failed")
         raise FileNotFoundError(f"[{run_id}] expected checkpoint not found: {ckpt_path}")
 
     eval_dir = RESULTS_ROOT / run_id / "mentor_eval"
@@ -85,11 +91,18 @@ def run_candidate(run_id: str) -> None:
 
     # Reuse the EXISTING mentor_eval scripts, pointed at this candidate's
     # checkpoint via their own --ckpt/--out-dir flags -- no new harness.
-    for module in ("mentor_eval.classification_validation", "mentor_eval.similarity_metrics"):
-        subprocess.run(
-            [sys.executable, "-m", module, "--ckpt", str(ckpt_path), "--out-dir", str(eval_dir)],
-            cwd=str(REPO_ROOT), check=True,
-        )
+    try:
+        for module in ("mentor_eval.classification_validation", "mentor_eval.similarity_metrics"):
+            subprocess.run(
+                [sys.executable, "-m", module, "--ckpt", str(ckpt_path), "--out-dir", str(eval_dir)],
+                cwd=str(REPO_ROOT), check=True,
+            )
+    except subprocess.CalledProcessError as exc:
+        write_metadata(run_id, variant, status="eval_failed", checkpoint_path=ckpt_path)
+        log.error(f"[{run_id}] evaluation failed ({exc}) -- checkpoint is valid, training for "
+                  f"the NEXT candidate will still proceed. Fix the evaluator and re-run "
+                  f"evaluation only for {run_id}; do not retrain.")
+        return
 
     write_metadata(run_id, variant, status="done", checkpoint_path=ckpt_path)
     log.info(f"[{run_id}] done -- checkpoint={ckpt_path}, eval output={eval_dir}")
@@ -115,6 +128,22 @@ def evaluate_wave_gate(run_ids: list[str]) -> bool:
     for run_id in run_ids:
         metrics_path = RESULTS_ROOT / run_id / "mentor_eval" / "classifier_real_eval.json"
         if not metrics_path.exists():
+            meta_path = _metadata_path(run_id)
+            status = None
+            if meta_path.exists():
+                with open(meta_path) as f:
+                    status = json.load(f).get("status")
+            if status == "eval_failed":
+                raise FileNotFoundError(
+                    f"[{run_id}] evaluation FAILED (metadata.json status=eval_failed) -- "
+                    f"metrics at {metrics_path} were never produced. Fix the evaluator and "
+                    f"re-run evaluation for {run_id} before this gate can be evaluated."
+                )
+            if status == "train_failed":
+                raise FileNotFoundError(
+                    f"[{run_id}] training FAILED (metadata.json status=train_failed) -- "
+                    f"this candidate never produced a checkpoint to evaluate."
+                )
             raise FileNotFoundError(f"[{run_id}] no evaluation metrics found at {metrics_path} "
                                      f"-- run_candidate() must complete before the gate can be evaluated.")
         with open(metrics_path) as f:

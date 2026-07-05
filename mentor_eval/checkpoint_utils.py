@@ -15,8 +15,16 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from step04_transformer_diffusion import (
-    ECGTransformerDiffusion, GaussianDiffusion, EMA, generate_ecg, _resolve_device,
+    GaussianDiffusion, EMA, generate_ecg, _resolve_device,
 )
+
+STAGE3_CANDIDATES_DIR = (
+    Path(__file__).resolve().parents[1]
+    / "Roadmap" / "Stage_3_Architecture_Improvements" / "Code" / "stage3_candidates"
+)
+if str(STAGE3_CANDIDATES_DIR) not in sys.path:
+    sys.path.insert(0, str(STAGE3_CANDIDATES_DIR))
+from model_variants import build_variant_model  # noqa: E402
 
 
 class LoadedCheckpoint:
@@ -43,9 +51,10 @@ def load_checkpoint(ckpt_path: Path, cfg) -> Optional[LoadedCheckpoint]:
     ckpt = torch.load(str(ckpt_path), map_location=device)
     class_names = ckpt["class_names"]
     n_classes = ckpt["n_classes"]
+    variant = ckpt.get("variant", "baseline")
 
-    model = ECGTransformerDiffusion(cfg, n_classes=n_classes).to(device)
-    model.load_state_dict(ckpt["model"])
+    model = build_variant_model(cfg, n_classes=n_classes, variant=variant).to(device)
+    model.load_state_dict(ckpt["model"], strict=True)
     model.eval()
 
     ema = EMA(model, decay=float(cfg.diffusion.ema_decay))
