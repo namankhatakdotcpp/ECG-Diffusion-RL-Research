@@ -53,7 +53,14 @@ VARIANT_BY_RUN_ID = {
 # Frozen baseline metrics, produced once against outputs/models/diffusion_best.pt,
 # per Stage3_Roadmap.md Sec. 6's baseline-comparison protocol. Must exist before
 # evaluate_wave_gate() can run -- this script does not fabricate a placeholder.
-BASELINE_METRICS_PATH = REPO_ROOT / "outputs" / "mentor_review" / "classification_validation" / "classifier_real_eval.json"
+#
+# Uses classifier_GENERATED_eval.json, not classifier_real_eval.json: the
+# real-data classifier's accuracy on real held-out data does not depend on
+# which diffusion variant produced the model being gated -- it is expected
+# to be ~constant across every candidate (confirmed bit-identical across
+# S3-001/S3-002 runs). Only generated-data accuracy reflects the actual
+# diffusion variant under test; that is what the gate must compare.
+BASELINE_METRICS_PATH = REPO_ROOT / "outputs" / "mentor_review" / "classification_validation" / "classifier_generated_eval.json"
 
 # Primary metric used for the Wave 1 gate (>= 1 primary metric improving triggers
 # proceed-to-Wave-2). Kept to ONE well-understood metric here rather than several,
@@ -126,7 +133,7 @@ def evaluate_wave_gate(run_ids: list[str]) -> bool:
 
     improved = []
     for run_id in run_ids:
-        metrics_path = RESULTS_ROOT / run_id / "mentor_eval" / "classifier_real_eval.json"
+        metrics_path = RESULTS_ROOT / run_id / "mentor_eval" / "classifier_generated_eval.json"
         if not metrics_path.exists():
             meta_path = _metadata_path(run_id)
             status = None
