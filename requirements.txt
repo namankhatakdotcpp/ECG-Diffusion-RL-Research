@@ -43,3 +43,6 @@ omegaconf>=2.3
 # Utilities
 tqdm>=4.65
 umap-learn>=0.5             # UMAP dimensionality reduction (mentor_eval/embedding_visualization.py)
+
+# Testing
+pytest>=7.0                 # Roadmap/_infra/test_build_master_log.py, stage3_candidates/test_compare_candidates.py

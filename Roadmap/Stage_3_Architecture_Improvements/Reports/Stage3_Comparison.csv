@@ -1,6 +1,7 @@
-Candidate,Variant,Generated Accuracy,Generated Macro-F1,Generated Macro-AUC,Real-data Accuracy,Delta vs. Baseline (accuracy),Optimizer Config,Status
-S3-001,baseline,,,,,,unknown,not yet evaluated -- no metadata.json found
-S3-002,layerscale,,,,,,unknown,not yet evaluated -- no metadata.json found
-S3-003,late_gain,,,,,,unknown,not yet evaluated -- no metadata.json found
-S3-004,residual_scaling,,,,,,unknown,not yet evaluated -- no metadata.json found
-S3-005,hybrid,,,,,,unknown,not yet evaluated -- no metadata.json found
+Candidate,Variant,Params (M),Generated Accuracy,Generated Macro-F1,Generated Macro-AUC,Real-data Accuracy,Delta vs. Baseline (accuracy),Similarity Cosine (mean),Similarity Mahalanobis (mean),Sharma/Subband Metrics,Training Time,Optimizer Config,Status
+S3-001,baseline,8.43,,,,,,,,not computed (queue does not run subband_similarity_metrics),,unknown,not yet evaluated -- no metadata.json found
+S3-002,layerscale,8.43,,,,,,,,not computed (queue does not run subband_similarity_metrics),,unknown,not yet evaluated -- no metadata.json found
+S3-003,late_gain,8.43,,,,,,,,not computed (queue does not run subband_similarity_metrics),,unknown,not yet evaluated -- no metadata.json found
+S3-004,residual_scaling,8.43,,,,,,,,not computed (queue does not run subband_similarity_metrics),,unknown,not yet evaluated -- no metadata.json found
+S3-005,hybrid,8.43,,,,,,,,not computed (queue does not run subband_similarity_metrics),,unknown,not yet evaluated -- no metadata.json found
+S3-006,final_norm_gain,8.43,,,,,,,,not computed (queue does not run subband_similarity_metrics),,unknown,not yet evaluated -- no metadata.json found

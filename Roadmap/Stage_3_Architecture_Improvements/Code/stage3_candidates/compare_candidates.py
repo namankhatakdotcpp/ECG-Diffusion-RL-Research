@@ -24,8 +24,11 @@ import hashlib
 import json
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+import pandas as pd
 
 THIS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = THIS_DIR.parents[3]
@@ -34,9 +37,25 @@ if str(REPO_ROOT) not in sys.path:
 if str(THIS_DIR) not in sys.path:
     sys.path.insert(0, str(THIS_DIR))
 
+STAGE2_CODE_DIR = REPO_ROOT / "Roadmap" / "Stage_2_Architecture_Investigation" / "Code"
+if str(STAGE2_CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(STAGE2_CODE_DIR))
+
 from run_stage3_queue import VARIANT_BY_RUN_ID, RESULTS_ROOT, BASELINE_METRICS_PATH  # noqa: E402
+from common.io import load_config  # noqa: E402
+from model_variants import build_variant_model  # noqa: E402
 
 REPORTS_DIR = REPO_ROOT / "Roadmap" / "Stage_3_Architecture_Improvements" / "Reports"
+
+# Single source of truth for column order/names -- write_markdown() and
+# write_csv() both use this so the two outputs can never silently drift
+# apart from each other.
+TABLE_HEADER = [
+    "Candidate", "Variant", "Params (M)", "Generated Accuracy", "Generated Macro-F1",
+    "Generated Macro-AUC", "Real-data Accuracy", "Delta vs. Baseline (accuracy)",
+    "Similarity Cosine (mean)", "Similarity Mahalanobis (mean)", "Sharma/Subband Metrics",
+    "Training Time", "Optimizer Config", "Status",
+]
 BASELINE_MANIFEST_PATH = REPO_ROOT / "outputs" / "mentor_review" / "baseline_manifest.json"
 BASELINE_CKPT_PATH = REPO_ROOT / "outputs" / "models" / "diffusion_best.pt"
 
@@ -86,6 +105,100 @@ def _load_json(path: Path) -> Optional[dict]:
         return json.load(f)
 
 
+_PARAM_COUNT_CACHE: dict[str, float] = {}
+
+
+def param_count_millions(variant: str) -> Optional[float]:
+    """Parameter count depends only on the variant (architecture), not on
+    which run_id trained it -- computable right now, without GPU or any
+    training having happened, by instantiating the same
+    build_variant_model() used for training/smoke-testing. Cached per
+    variant since 6 variants would otherwise be rebuilt on every row."""
+    if variant in _PARAM_COUNT_CACHE:
+        return _PARAM_COUNT_CACHE[variant]
+    try:
+        cfg = load_config()
+        model = build_variant_model(cfg, n_classes=int(cfg.ptbxl.n_classes), variant=variant)
+        n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        value = round(n_params / 1e6, 2)
+    except Exception:
+        value = None
+    _PARAM_COUNT_CACHE[variant] = value
+    return value
+
+
+def training_duration_str(meta: dict) -> Optional[str]:
+    """Derived from metadata.json's own start_time/last_updated_utc (both
+    already written by stage3_metadata.write_metadata() -- no new
+    instrumentation needed). Only meaningful once status == "done"; for
+    an in-progress or failed run this would understate/misrepresent
+    actual training time, so it is intentionally left blank otherwise."""
+    if meta.get("status") != "done":
+        return None
+    start = meta.get("start_time")
+    end = meta.get("last_updated_utc")
+    if not start or not end:
+        return None
+    try:
+        delta = datetime.fromisoformat(end) - datetime.fromisoformat(start)
+    except ValueError:
+        return None
+    total_seconds = int(delta.total_seconds())
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes = remainder // 60
+    return f"{hours}h {minutes}m"
+
+
+def similarity_summary(run_dir: Path) -> dict:
+    """Mean cosine/Mahalanobis/Bhattacharyya across classes, from
+    similarity_metrics.csv -- already produced by run_stage3_queue.py's
+    per-candidate eval loop (mentor_eval.similarity_metrics), just never
+    read by this script before. Rows with a non-empty 'flag' (skipped,
+    e.g. too few real samples) are excluded from the mean rather than
+    treated as 0 -- averaging in a None/skipped row would silently bias
+    the mean toward looking better or worse than the classes that
+    actually got measured."""
+    csv_path = run_dir / "mentor_eval" / "similarity_metrics.csv"
+    empty = {"cosine": None, "mahalanobis": None, "bhattacharyya": None}
+    if not csv_path.exists():
+        return empty
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception:
+        return empty
+    if "flag" in df.columns:
+        df = df[df["flag"].fillna("") == ""]
+    if df.empty:
+        return empty
+    return {
+        "cosine": round(df["cosine_similarity"].mean(), 4) if df["cosine_similarity"].notna().any() else None,
+        "mahalanobis": round(df["mahalanobis"].mean(), 4) if df["mahalanobis"].notna().any() else None,
+        "bhattacharyya": round(df["bhattacharyya"].mean(), 4) if df["bhattacharyya"].notna().any() else None,
+    }
+
+
+def subband_summary(run_dir: Path) -> Optional[dict]:
+    """Sharma-inspired per-subband similarity (mentor_eval.subband_similarity_metrics),
+    including the A3 subband ("P/T-wave, ST-segment, baseline" per
+    subband_features.SUBBAND_CLINICAL_LABEL) -- the ST/T-wave-specific
+    signal referenced in Stage 3 planning. Returns None (not a dict of
+    Nones) when the file is absent, so callers can distinguish "not
+    computed for this candidate" from "computed, all values null" --
+    this file is NOT currently produced by run_stage3_queue.py's
+    automated per-candidate eval loop (only classification_validation
+    and similarity_metrics are), so it will be None for every candidate
+    until someone runs mentor_eval.subband_similarity_metrics manually,
+    or the queue is deliberately extended to include it."""
+    csv_path = run_dir / "mentor_eval" / "subband_similarity_metrics.csv"
+    if not csv_path.exists():
+        return None
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception:
+        return None
+    return {"n_rows": len(df), "path": str(csv_path)}
+
+
 def load_candidate_row(run_id: str, variant: str) -> dict:
     run_dir = RESULTS_ROOT / run_id
     meta = _load_json(run_dir / "metadata.json")
@@ -93,11 +206,16 @@ def load_candidate_row(run_id: str, variant: str) -> dict:
     row = {
         "Candidate": run_id,
         "Variant": variant,
+        "Params (M)": param_count_millions(variant),
         "Generated Accuracy": None,
         "Generated Macro-F1": None,
         "Generated Macro-AUC": None,
         "Real-data Accuracy": None,
         "Delta vs. Baseline (accuracy)": None,
+        "Similarity Cosine (mean)": None,
+        "Similarity Mahalanobis (mean)": None,
+        "Sharma/Subband Metrics": "not computed (queue does not run subband_similarity_metrics)",
+        "Training Time": None,
         "Optimizer Config": "unknown",
         "Status": "not yet evaluated -- no metadata.json found",
     }
@@ -107,6 +225,7 @@ def load_candidate_row(run_id: str, variant: str) -> dict:
 
     row["Status"] = meta.get("status", "unknown")
     row["Optimizer Config"] = classify_optimizer_config(meta.get("commit"))
+    row["Training Time"] = training_duration_str(meta)
 
     eval_dir = run_dir / "mentor_eval"
     real_metrics = _load_json(eval_dir / "classifier_real_eval.json")
@@ -125,6 +244,14 @@ def load_candidate_row(run_id: str, variant: str) -> dict:
         row["Status"] = "done -- generated-eval metrics missing (unexpected for status=done)"
     elif eval_dir.exists() and not gen_metrics:
         row["Status"] = row["Status"] + " -- generated-eval not yet produced"
+
+    sim = similarity_summary(run_dir)
+    row["Similarity Cosine (mean)"] = sim["cosine"]
+    row["Similarity Mahalanobis (mean)"] = sim["mahalanobis"]
+
+    subband = subband_summary(run_dir)
+    if subband is not None:
+        row["Sharma/Subband Metrics"] = f"computed ({subband['n_rows']} rows, see {subband['path']})"
 
     return row
 
@@ -192,28 +319,18 @@ def write_markdown(rows: list[dict], baseline_accuracy: Optional[float], provena
     else:
         lines.append(f"Baseline (classifier trained on real data, evaluated on generated ECGs) accuracy: `{baseline_accuracy:.4f}`\n")
 
-    header = [
-        "Candidate", "Variant", "Generated Accuracy", "Generated Macro-F1",
-        "Generated Macro-AUC", "Real-data Accuracy", "Delta vs. Baseline (accuracy)",
-        "Optimizer Config", "Status",
-    ]
-    lines.append("| " + " | ".join(header) + " |")
-    lines.append("|" + "---|" * len(header))
+    lines.append("| " + " | ".join(TABLE_HEADER) + " |")
+    lines.append("|" + "---|" * len(TABLE_HEADER))
     for row in rows:
-        cells = [str(row[h]) if row[h] is not None else "--" for h in header]
+        cells = [str(row[h]) if row[h] is not None else "--" for h in TABLE_HEADER]
         lines.append("| " + " | ".join(cells) + " |")
 
     out_path.write_text("\n".join(lines) + "\n")
 
 
 def write_csv(rows: list[dict], out_path: Path) -> None:
-    header = [
-        "Candidate", "Variant", "Generated Accuracy", "Generated Macro-F1",
-        "Generated Macro-AUC", "Real-data Accuracy", "Delta vs. Baseline (accuracy)",
-        "Optimizer Config", "Status",
-    ]
     with open(out_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=header)
+        writer = csv.DictWriter(f, fieldnames=TABLE_HEADER)
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
