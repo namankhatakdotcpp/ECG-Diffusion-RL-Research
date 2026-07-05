@@ -142,8 +142,16 @@ def train_variant(cfg, log, variant: str, run_id: str, n_epochs_override: Option
 
     _lr = float(d.lr)
     _wd = float(d.weight_decay)
-    _decay_params   = [p for n, p in model.named_parameters() if n != "class_emb.weight"]
-    _nodecay_params = [p for n, p in model.named_parameters() if n == "class_emb.weight"]
+    # class_emb.weight: excluded per Item 2's finding that decaying a
+    # conditioning-carrying parameter suppresses its signal. gamma1/gamma2
+    # (LayerScale, late_gain, residual_scaling) and boost (hybrid's extra
+    # late-block gain, model_variants.py:128) are the same class of
+    # learnable per-branch gain and get the same exclusion -- decay was
+    # otherwise pulling every one of them toward 0 every step with no
+    # protection, unlike class_emb.weight.
+    _nodecay_names = lambda n: n == "class_emb.weight" or "gamma" in n or "boost" in n
+    _decay_params   = [p for n, p in model.named_parameters() if not _nodecay_names(n)]
+    _nodecay_params = [p for n, p in model.named_parameters() if _nodecay_names(n)]
     optimiser = torch.optim.AdamW(
         [
             {"params": _decay_params,   "weight_decay": _wd},
