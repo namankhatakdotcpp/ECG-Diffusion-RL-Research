@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 THIS_DIR = Path(__file__).resolve().parent
@@ -63,6 +65,29 @@ VARIANT_BY_RUN_ID = {
 # diffusion variant under test; that is what the gate must compare.
 BASELINE_METRICS_PATH = REPO_ROOT / "outputs" / "mentor_review" / "classification_validation" / "classifier_generated_eval.json"
 
+# One log file per process invocation (shared by every candidate this
+# invocation trains/evaluates), written unconditionally -- does not rely on
+# the invoking shell command redirecting/teeing stdout correctly. A
+# manually-typed `tee -a ../../../Results/queue_run.log` from
+# stage3_candidates/ resolves two directories too high and silently drops
+# the log while training proceeds unaffected; this removes that class of
+# error by making persistence the script's own responsibility, not the
+# operator's, in a detached tmux session under time pressure.
+QUEUE_LOG_PATH = RESULTS_ROOT / f"queue_run_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.log"
+
+
+def _attach_file_logging(log: logging.Logger) -> None:
+    if any(isinstance(h, logging.FileHandler) for h in log.handlers):
+        return  # already attached in this process
+    RESULTS_ROOT.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(str(QUEUE_LOG_PATH))
+    handler.setLevel(log.level)
+    handler.setFormatter(logging.Formatter(
+        fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    log.addHandler(handler)
+
 # Primary metric used for the Wave 1 gate (>= 1 primary metric improving triggers
 # proceed-to-Wave-2). Kept to ONE well-understood metric here rather than several,
 # per the roadmap's own caution against manufacturing false precision.
@@ -79,6 +104,7 @@ def run_candidate(run_id: str) -> None:
     variant = VARIANT_BY_RUN_ID[run_id]
     cfg = load_config()
     log = get_logger(f"queue_{run_id}", cfg=cfg)
+    _attach_file_logging(log)
 
     write_metadata(run_id, variant, status="queued")
     write_metadata(run_id, variant, status="training")
