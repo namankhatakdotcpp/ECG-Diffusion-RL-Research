@@ -33,6 +33,7 @@ VARIANTS = [
     ("S3-003", "late_gain"),
     ("S3-004", "residual_scaling"),
     ("S3-005", "hybrid"),
+    ("S3-006", "final_norm_gain"),
 ]
 
 

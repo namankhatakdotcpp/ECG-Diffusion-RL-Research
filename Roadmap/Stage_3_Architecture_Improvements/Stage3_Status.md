@@ -17,7 +17,7 @@ is the at-a-glance status index, kept current as work lands.
 | S3-003 (late_gain) | Implemented, smoke-tested | Not yet trained -- both smoke tests PASS | `85e1b1a` / `ea6ce0d` |
 | S3-004 (residual_scaling) | Implemented, smoke-tested | Not yet trained -- both smoke tests PASS | `85e1b1a` / `ea6ce0d` |
 | S3-005 (hybrid) | Implemented, smoke-tested | Not yet trained -- both smoke tests PASS | `85e1b1a` / `ea6ce0d` |
-| S3-006 (final_norm/unproj) | Not started | Deprioritized -- Wave 3, per Task 0.2's borderline margin. No code exists yet. | -- |
+| S3-006 (final_norm/unproj) | Implemented, smoke-tested, ready for Wave 3 (2026-07-05) | Deprioritized -- Wave 3, per Task 0.2's borderline margin. Learnable per-channel gain (`final_gamma`) at the final_norm->unproj boundary; both smoke tests PASS; registered in `run_stage3_queue.py`'s `VARIANT_BY_RUN_ID`, ready to queue. | -- |
 | Wave 1 GPU training (S3-001/002/003) | **Blocked** | Local MPS device confirmed out-of-memory on a single production-batch-size (32) training step (real error, not assumed) -- requires the remote GPU server per standing project workflow; no direct SSH/GPU access from this session | -- |
 
 ## Infrastructure (supporting all of the above, not itself a tracked phase)

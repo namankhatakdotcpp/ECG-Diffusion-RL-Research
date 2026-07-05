@@ -25,6 +25,7 @@ if str(THIS_DIR) not in sys.path:
     sys.path.insert(0, str(THIS_DIR))
 
 from model_variants import build_variant_model  # noqa: E402
+from common_train import build_optimizer_param_groups  # noqa: E402
 
 
 def run_smoke_test(cfg, log, variant: str, run_id: str) -> None:
@@ -105,8 +106,7 @@ def run_optimizer_smoke_test(cfg, log, variant: str, run_id: str, n_iters: int =
     d = cfg.diffusion
 
     model = build_variant_model(cfg, n_classes=n_classes, variant=variant)
-    decay_params   = [p for n, p in model.named_parameters() if n != "class_emb.weight"]
-    nodecay_params = [p for n, p in model.named_parameters() if n == "class_emb.weight"]
+    decay_params, nodecay_params = build_optimizer_param_groups(model, run_id)
     optimiser = torch.optim.AdamW(
         [
             {"params": decay_params,   "weight_decay": float(d.weight_decay)},

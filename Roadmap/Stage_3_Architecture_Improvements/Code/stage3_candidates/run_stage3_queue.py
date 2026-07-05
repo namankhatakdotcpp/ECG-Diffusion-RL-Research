@@ -48,6 +48,7 @@ VARIANT_BY_RUN_ID = {
     "S3-003": "late_gain",
     "S3-004": "residual_scaling",
     "S3-005": "hybrid",
+    "S3-006": "final_norm_gain",
 }
 
 # Frozen baseline metrics, produced once against outputs/models/diffusion_best.pt,

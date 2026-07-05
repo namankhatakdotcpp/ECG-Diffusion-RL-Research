@@ -143,7 +143,7 @@ class ECGTransformerDiffusionVariant(nn.Module):
     must accept the same (model_dim, n_heads, d_ff, dropout)
     constructor signature as TransformerBlock)."""
 
-    def __init__(self, cfg, n_classes: int, block_classes: list):
+    def __init__(self, cfg, n_classes: int, block_classes: list, use_final_gain: bool = False):
         super().__init__()
         d = cfg.diffusion
         model_dim = int(d.model_dim)
@@ -176,6 +176,47 @@ class ECGTransformerDiffusionVariant(nn.Module):
         self.n_patches = sig_len // patch_sz
         self.patch_size = patch_sz
         self._dim = model_dim
+
+        # S3-006 (final_norm_gain) only -- absent (None) for every other
+        # variant, zero behavior change for S3-001..005.
+        #
+        # Mechanism: one learnable per-channel gain multiplying the FULL
+        # tokens tensor at the exact locus Phase 0 Task 0.2's causal
+        # ablation measured -- forward() computes
+        #     out = unproj(final_gamma * final_norm(tokens))
+        # instead of step04's original `unproj(final_norm(tokens))`. This
+        # is the same boundary Task 0.2's delta_after/delta_before ratio
+        # was computed across (step04_transformer_diffusion.py:226,229),
+        # so the intervention sits exactly where the borderline evidence
+        # (retention_ratio_conditioning 0.41 vs. 0.5 threshold) was found,
+        # not a generalization to some other stage.
+        #
+        # Initialized to 1.0 (identity at init), same convention as every
+        # other gain in this file (gamma1/gamma2/boost) -- combined with
+        # adaLN's own zero-init, the model is an exact identity map at
+        # init regardless of this gain's value.
+        #
+        # Named "final_gamma" (not e.g. "final_boundary_scale") so it is
+        # automatically caught by common_train.py's existing "gamma"/
+        # "boost" no-decay substring match -- confirmed by first building
+        # this under a non-matching name and observing common_train.py's
+        # startup tripwire correctly fire, then renaming to this
+        # convention-matching name rather than extending the matcher's
+        # keyword list for a single parameter.
+        #
+        # Scope note: this is a COARSE, uniform per-channel gain over the
+        # whole tensor at this boundary -- it can uniformly rescale the
+        # entire signal passing through final_norm/unproj, but it has no
+        # mechanism to differentially amplify the conditioning-specific
+        # component relative to the rest of the signal. Task 0.2's
+        # ablation measured delta NORMS (conditioning-specific vs.
+        # whole-tensor), not a subspace decomposition, so there is no
+        # basis yet for a more targeted correction that reweights one
+        # component over the other. This candidate tests whether a
+        # uniform gain at this locus helps at all (consistent with the
+        # other gain-focused candidates S3-002..005), not whether the
+        # disproportionate-suppression finding itself can be reversed.
+        self.final_gamma = nn.Parameter(torch.ones(model_dim)) if use_final_gain else None
 
         self._init_weights()
 
@@ -213,6 +254,8 @@ class ECGTransformerDiffusionVariant(nn.Module):
         for block in self.blocks:
             tokens = block(tokens, cond_film)
         tokens = self.final_norm(tokens)
+        if self.final_gamma is not None:
+            tokens = tokens * self.final_gamma
         out = self.unproj(tokens)
         out = out.reshape(B, self.n_leads, self.n_patches, self.patch_size)
         out = out.reshape(B, self.n_leads, -1)
@@ -220,8 +263,10 @@ class ECGTransformerDiffusionVariant(nn.Module):
 
 
 def build_variant_model(cfg, n_classes: int, variant: str) -> ECGTransformerDiffusionVariant:
-    """variant in {"baseline", "layerscale", "late_gain", "residual_scaling", "hybrid"}."""
+    """variant in {"baseline", "layerscale", "late_gain", "residual_scaling",
+    "hybrid", "final_norm_gain"}."""
     n_layers = int(cfg.diffusion.n_transformer_layers)
+    use_final_gain = False
 
     if variant == "baseline":
         block_classes = [TransformerBlock] * n_layers
@@ -236,7 +281,16 @@ def build_variant_model(cfg, n_classes: int, variant: str) -> ECGTransformerDiff
     elif variant == "hybrid":
         # LayerScale everywhere, PLUS extra boost on the last two blocks.
         block_classes = [TransformerBlockLayerScale] * (n_layers - 2) + [TransformerBlockLayerScaleBoosted] * 2
+    elif variant == "final_norm_gain":
+        # S3-006: plain TransformerBlock everywhere (this candidate tests
+        # the final_norm/unproj boundary, not per-block residual scaling --
+        # deliberately isolated from the gain-focused block mechanisms
+        # tested by S3-002..005, per Phase 0 Task 0.2's own locus).
+        block_classes = [TransformerBlock] * n_layers
+        use_final_gain = True
     else:
         raise ValueError(f"Unknown variant: {variant}")
 
-    return ECGTransformerDiffusionVariant(cfg, n_classes=n_classes, block_classes=block_classes)
+    return ECGTransformerDiffusionVariant(
+        cfg, n_classes=n_classes, block_classes=block_classes, use_final_gain=use_final_gain,
+    )

@@ -59,6 +59,53 @@ RESULTS_ROOT = (
 KEEP_LAST_N_CHECKPOINTS = 2  # same retention policy as step04, per candidate run
 
 
+def build_optimizer_param_groups(model, run_id: str) -> tuple[list, list]:
+    """Single source of truth for the no-decay exclusion + tripwire, used by
+    BOTH full training (below) and smoke_test.py's optimizer smoke test --
+    previously these were two separate copies and the smoke test's copy
+    was never updated when the gamma/boost fix landed here, silently
+    de-syncing the two. Returns (decay_params, nodecay_params).
+
+    class_emb.weight: excluded per Item 2's finding that decaying a
+    conditioning-carrying parameter suppresses its signal. gamma1/gamma2
+    (LayerScale, late_gain, residual_scaling) and boost (hybrid's extra
+    late-block gain, model_variants.py:128) are the same class of
+    learnable per-branch gain and get the same exclusion -- decay was
+    otherwise pulling every one of them toward 0 every step with no
+    protection, unlike class_emb.weight.
+    """
+    _nodecay_names = lambda n: n == "class_emb.weight" or "gamma" in n or "boost" in n
+    decay_params   = [p for n, p in model.named_parameters() if not _nodecay_names(n)]
+    nodecay_params = [p for n, p in model.named_parameters() if _nodecay_names(n)]
+
+    # Tripwire: the name-based exclusion above only knows about gain
+    # parameters that exist today (gamma1/gamma2/boost). A future variant
+    # (e.g. S3-006) could introduce a differently-named learnable gain
+    # scalar that silently reintroduces the same unprotected-decay bug.
+    # Flag any small 1D parameter (gain-shaped) that isn't already
+    # excluded and isn't a norm/bias param (which legitimately decay
+    # under this codebase's convention) -- refuse to start training
+    # rather than train silently under an unreviewed assumption.
+    # numel<=512 assumes model_dim=256 (per-channel gain shape); revisit
+    # this threshold if a future variant introduces a gain param on a
+    # wider dimension (e.g. a per-position gain, or one sized to d_ff).
+    _uncaught_gain_like = [
+        n for n, p in model.named_parameters()
+        if p.ndim <= 1 and p.numel() <= 512
+        and not _nodecay_names(n)
+        and "norm" not in n and "bias" not in n
+    ]
+    if _uncaught_gain_like:
+        raise RuntimeError(
+            f"[{run_id}] found {len(_uncaught_gain_like)} small 1D parameter(s) "
+            f"not covered by the gamma/boost/class_emb.weight no-decay exclusion "
+            f"and not a norm/bias param: {_uncaught_gain_like}. Verify whether "
+            f"these are gain-like parameters that need decay excluded before "
+            f"training (see 2026-07-05 weight-decay finding)."
+        )
+    return decay_params, nodecay_params
+
+
 def train_variant(cfg, log, variant: str, run_id: str, n_epochs_override: Optional[int] = None) -> float:
     """Trains one Stage 3 candidate. Identical procedure to step04's own
     `train()` (data loading, optimizer groups, CFG dropout, AMP,
@@ -142,42 +189,7 @@ def train_variant(cfg, log, variant: str, run_id: str, n_epochs_override: Option
 
     _lr = float(d.lr)
     _wd = float(d.weight_decay)
-    # class_emb.weight: excluded per Item 2's finding that decaying a
-    # conditioning-carrying parameter suppresses its signal. gamma1/gamma2
-    # (LayerScale, late_gain, residual_scaling) and boost (hybrid's extra
-    # late-block gain, model_variants.py:128) are the same class of
-    # learnable per-branch gain and get the same exclusion -- decay was
-    # otherwise pulling every one of them toward 0 every step with no
-    # protection, unlike class_emb.weight.
-    _nodecay_names = lambda n: n == "class_emb.weight" or "gamma" in n or "boost" in n
-    _decay_params   = [p for n, p in model.named_parameters() if not _nodecay_names(n)]
-    _nodecay_params = [p for n, p in model.named_parameters() if _nodecay_names(n)]
-
-    # Tripwire: the name-based exclusion above only knows about gain
-    # parameters that exist today (gamma1/gamma2/boost). A future variant
-    # (e.g. S3-006) could introduce a differently-named learnable gain
-    # scalar that silently reintroduces the same unprotected-decay bug.
-    # Flag any small 1D parameter (gain-shaped) that isn't already
-    # excluded and isn't a norm/bias param (which legitimately decay
-    # under this codebase's convention) -- refuse to start training
-    # rather than train silently under an unreviewed assumption.
-    # numel<=512 assumes model_dim=256 (per-channel gain shape); revisit
-    # this threshold if a future variant introduces a gain param on a
-    # wider dimension (e.g. a per-position gain, or one sized to d_ff).
-    _uncaught_gain_like = [
-        n for n, p in model.named_parameters()
-        if p.ndim <= 1 and p.numel() <= 512
-        and not _nodecay_names(n)
-        and "norm" not in n and "bias" not in n
-    ]
-    if _uncaught_gain_like:
-        raise RuntimeError(
-            f"[{run_id}] found {len(_uncaught_gain_like)} small 1D parameter(s) "
-            f"not covered by the gamma/boost/class_emb.weight no-decay exclusion "
-            f"and not a norm/bias param: {_uncaught_gain_like}. Verify whether "
-            f"these are gain-like parameters that need decay excluded before "
-            f"training (see 2026-07-05 weight-decay finding)."
-        )
+    _decay_params, _nodecay_params = build_optimizer_param_groups(model, run_id)
     optimiser = torch.optim.AdamW(
         [
             {"params": _decay_params,   "weight_decay": _wd},
