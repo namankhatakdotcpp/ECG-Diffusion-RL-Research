@@ -161,6 +161,9 @@ def train_variant(cfg, log, variant: str, run_id: str, n_epochs_override: Option
     # excluded and isn't a norm/bias param (which legitimately decay
     # under this codebase's convention) -- refuse to start training
     # rather than train silently under an unreviewed assumption.
+    # numel<=512 assumes model_dim=256 (per-channel gain shape); revisit
+    # this threshold if a future variant introduces a gain param on a
+    # wider dimension (e.g. a per-position gain, or one sized to d_ff).
     _uncaught_gain_like = [
         n for n, p in model.named_parameters()
         if p.ndim <= 1 and p.numel() <= 512
