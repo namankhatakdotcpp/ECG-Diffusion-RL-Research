@@ -20,14 +20,15 @@ Roadmap/
     MASTER_PROGRESS.md         — single-page status across all stages
     roadmap.json                — machine-readable stage/experiment status
 
-    Stage_1_Diagnosis/                    — why does conditioning fail?
-    Stage_2_Architecture_Investigation/   — (not started — gated on Stage 1 decision)
-                                             verification + audit + Tier 0 measurement,
-                                             no architecture changes
-    Stage_3_Architecture_Improvements/    — (not started — gated on Stage 2 Tier 0 evidence)
-                                             actual architecture changes, one at a time
-    Stage_4_Optimization/                 — (not started)
-    Stage_5_Final_Model/                  — (not started)
+    Stage_1_Diagnosis/                    — why does conditioning fail? (complete)
+    Stage_2_Architecture_Investigation/   — (complete) verification + audit +
+                                             Tier 0 measurement, no architecture changes
+    Stage_3_Architecture_Improvements/    — (in progress) actual architecture
+                                             changes, one at a time -- Phase 0 complete,
+                                             candidates S3-001..006 implemented,
+                                             GPU training underway
+    Stage_4_Optimization/                 — (not started — gated on Stage 3)
+    Stage_5_Final_Model/                  — (not started — gated on Stage 4)
 ```
 
 Each stage folder contains:
@@ -38,6 +39,15 @@ Each stage folder contains:
 - `Decisions.md` — conclusions and the evidence backing them
 - `Outputs/`, `Figures/`, `Code/`, `Reports/` — stage artifacts
 
-## Current stage: Stage 1 — Diagnosis
+Some stages' `Objectives.md`/`Progress.md`/`Decisions.md`/`Experiment_Log.md`
+are deliberately left as one-line pointers rather than filled in when a
+stage's own status file (e.g. `STAGE2_STATUS.md`, `Stage3_Status.md`)
+already tracks that same information -- kept in one place rather than two
+copies that can drift apart. Check each stage's own `README.md` first.
 
-See [`Stage_1_Diagnosis/README.md`](Stage_1_Diagnosis/README.md).
+## Current stage: Stage 3 — Architecture Improvements
+
+See [`Stage_3_Architecture_Improvements/Stage3_Status.md`](Stage_3_Architecture_Improvements/Stage3_Status.md)
+for live status. Stage 1 ([`Stage_1_Diagnosis/README.md`](Stage_1_Diagnosis/README.md))
+and Stage 2 ([`Stage_2_Architecture_Investigation/README.md`](Stage_2_Architecture_Investigation/README.md))
+are both complete.

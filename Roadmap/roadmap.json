@@ -2,30 +2,33 @@
   "project": "ECG Diffusion Conditioning Research Roadmap",
   "owner": "Naman Khatak",
   "created": "2026-07-02",
-  "current_stage": "Stage_1_Diagnosis",
+  "last_updated": "2026-07-06",
+  "current_stage": "Stage_3_Architecture_Improvements",
   "rule": "Do not begin a stage until the previous stage's Decisions.md justifies proceeding.",
+  "status_files_note": "Per-stage status (STAGE2_STATUS.md, Stage3_Status.md) is the authoritative, kept-current detail -- this file is a coarse machine-readable index, updated at stage-transition points, not on every experiment.",
   "stages": [
     {
       "id": "Stage_1_Diagnosis",
       "goal": "Determine WHY class conditioning fails before touching architecture.",
-      "status": "in_progress",
+      "status": "complete",
+      "detail": "Stage_1_Diagnosis/Decisions.md",
       "experiments": [
         {
           "id": 1,
           "name": "Baseline Reproduction",
-          "status": "code_ready_awaiting_gpu_server",
+          "status": "complete",
           "report": "baseline_report.md"
         },
         {
           "id": 2,
           "name": "Dataset Scaling (PTB-XL only, no new data)",
-          "status": "code_ready_awaiting_gpu_server",
+          "status": "complete",
           "report": "dataset_scaling_report.md"
         },
         {
           "id": 3,
           "name": "Directional Conditioning Analysis",
-          "status": "code_ready_awaiting_gpu_server",
+          "status": "complete",
           "report": "directional_conditioning_report.md"
         },
         {
@@ -37,7 +40,7 @@
         {
           "id": 5,
           "name": "Decision Report",
-          "status": "blocked_on_experiments_1_2_3",
+          "status": "complete",
           "report": "Stage1_Final_Report.md"
         }
       ]
@@ -45,23 +48,24 @@
     {
       "id": "Stage_2_Architecture_Investigation",
       "goal": "Verify Stage 1 findings, audit repository provenance, and measure (no retraining) where/why conditioning fails inside the model -- Tier 0 only. Tier 1 (actual architecture changes) is Stage 3's job, not this stage's, even though both are planned in the same Stage2_Master_Prompt.md for continuity.",
-      "status": "not_started",
-      "note": "Renamed from Stage_2_Training 2026-07-02 -- was an empty placeholder, no content lost."
+      "status": "complete",
+      "detail": "Stage_2_Architecture_Investigation/STAGE2_STATUS.md"
     },
     {
       "id": "Stage_3_Architecture_Improvements",
       "goal": "Implement architecture changes justified by Stage 2 Tier 0 evidence (e.g. LayerScale-style per-block gain, cross-attention, auxiliary classifier loss), one variable changed at a time.",
-      "status": "not_started",
-      "note": "Renamed from Stage_3_Architecture 2026-07-02 -- was an empty placeholder, no content lost. Receives Stage2_Master_Prompt.md's Tier 1 items (9-11) as its own experiments, not nested under Stage 2."
+      "status": "in_progress",
+      "note": "Phase 0 (pre-registration + dilution/final_norm-unproj findings) complete. Candidates S3-001..S3-006 implemented and smoke-tested. GPU training of S3-001..003 (Wave 1) underway/complete; S3-004/005 (Wave 2) queued; S3-006 (Wave 3) deprioritized pending Wave 1/2 results.",
+      "detail": "Stage_3_Architecture_Improvements/Stage3_Status.md"
     },
     {
       "id": "Stage_4_Optimization",
-      "goal": "TBD pending Stage 1 decision",
+      "goal": "TBD pending Stage 3 decision",
       "status": "not_started"
     },
     {
       "id": "Stage_5_Final_Model",
-      "goal": "TBD pending Stage 1 decision",
+      "goal": "TBD pending Stage 4 decision",
       "status": "not_started"
     }
   ],

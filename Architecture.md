@@ -5,6 +5,15 @@ code currently implements it, verified by reading source directly — not by
 trusting prior markdown summaries. Where a prior report disagreed with the
 code, the code wins and the discrepancy is called out explicitly.
 
+**Not updated in place since 2026-07-02** -- Stage 2 and Stage 3 have since
+added `mentor_eval/` (evaluation pipeline, not described below) and
+`Roadmap/Stage_3_Architecture_Improvements/Code/stage3_candidates/`
+(6 architecture variants built on top of, not replacing, `step04`'s
+`ECGTransformerDiffusion` described here -- see `model_variants.py`'s
+`ECGTransformerDiffusionVariant` and `Roadmap/Stage_3_Architecture_Improvements/Stage3_Status.md`
+for what's current). The step01-09 pipeline description below is still
+accurate; it just isn't the whole picture anymore.
+
 ## 1. Project structure
 
 ```

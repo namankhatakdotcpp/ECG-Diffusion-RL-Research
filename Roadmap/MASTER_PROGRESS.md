@@ -1,14 +1,26 @@
 # Master Progress
 
-Last updated: 2026-07-02
+Current status (updated 2026-07-06) -- see each stage's own status file for
+detail, since that is where status is actually kept current; this table is
+a top-level index, not the source of truth:
 
-| Stage | Status | Notes |
+| Stage | Status | Detail |
 |---|---|---|
-| Stage 1 — Diagnosis | **In progress** | Architecture review done. Experiment 4 (classifier verification) run and complete. Experiments 1-3 fully coded, awaiting GPU-server execution. Experiment 5 (decision report) blocked on 1-3. |
-| Stage 2 — Training | Not started | Gated on Stage 1 `Decisions.md` |
-| Stage 3 — Architecture | Not started | Gated on Stage 1 `Decisions.md` |
+| Stage 1 — Diagnosis | **Complete** | `Stage_1_Diagnosis/Decisions.md` |
+| Stage 2 — Architecture Investigation | **Complete** | `Stage_2_Architecture_Investigation/STAGE2_STATUS.md` |
+| Stage 3 — Architecture Improvements | **In progress** — Phase 0 complete, candidates S3-001..006 implemented, GPU training underway | `Stage_3_Architecture_Improvements/Stage3_Status.md` |
 | Stage 4 — Optimization | Not started | Gated on Stage 3 |
 | Stage 5 — Final Model | Not started | Gated on Stage 4 |
+
+---
+
+## Historical snapshot below (as of 2026-07-02) -- superseded by the table above
+
+The section below was accurate on 2026-07-02, while Stage 1 was still
+in progress. Left in place as a dated log entry (this project's own
+provenance convention), not updated in place -- do not read it as
+current status; the table above and each stage's own status file are
+current.
 
 ## Stage 1 status detail
 
