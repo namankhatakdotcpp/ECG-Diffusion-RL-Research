@@ -97,12 +97,24 @@ def figure2_architecture_comparison() -> Path:
         "S3-001 baseline": ["plain"] * 6,
         "S3-002 layerscale": ["gamma"] * 6,
         "S3-003 late_gain": ["plain"] * 4 + ["gamma"] * 2,
-        "S3-004 residual_scaling": ["scalar-gamma"] * 6,
+        "S3-004 residual_scaling": ["residual-scale"] * 6,
         "S3-005 hybrid": ["gamma"] * 4 + ["gamma+boost"] * 2,
         "S3-006 final_norm_gain": ["plain"] * 6 + ["final_gamma (post-norm)"],
     }
     color_by_kind = {
-        "plain": "#DCDCDC", "gamma": "#9ECAE1", "scalar-gamma": "#6BAED6",
+        # Both "gamma" (LayerScale/late_gain/hybrid) and "residual-scale"
+        # (S3-004) apply the identical x + gamma * branch_output structure
+        # (model_variants.py: TransformerBlockLayerScale and
+        # TransformerBlockResidualScale both do this to the SAME two
+        # branches -- neither touches the x/skip term itself). The only
+        # real difference is gamma's SHAPE: a per-channel vector
+        # (LayerScale, size model_dim) vs. one scalar per branch (residual
+        # scaling) -- a granularity difference, not a different
+        # application site. Labeled "residual-scale" rather than e.g.
+        # "scalar-gamma" purely to avoid a reader assuming it's a minor
+        # variant of LayerScale rather than its own tested hypothesis
+        # (Item 3's block-level, not channel-level, granularity).
+        "plain": "#DCDCDC", "gamma": "#9ECAE1", "residual-scale": "#6BAED6",
         "gamma+boost": "#3182BD", "final_gamma (post-norm)": "#F4A582",
     }
 
