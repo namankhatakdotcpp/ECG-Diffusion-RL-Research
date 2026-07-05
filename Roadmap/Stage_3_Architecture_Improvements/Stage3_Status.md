@@ -28,3 +28,13 @@ is the at-a-glance status index, kept current as work lands.
 | `stage3_metadata.py` (per-result metadata.json) | Done, verified end-to-end | `8507fa8` |
 | `run_stage3_queue.py` (sequential runner + automated gate) | Done, verified (gate correctly reads real baseline, fails loudly with no candidate metrics yet) | `8507fa8` |
 | `run_optimizer_smoke_tests.py` (2-iter optimizer check, all 5) | Done, all PASS | `ea6ce0d` |
+
+## Optimizer note (2026-07-05)
+
+gamma1/gamma2/boost gain parameters were unintentionally included in the
+default weight-decay group until commit `0294330` (name-based fix) and
+`432395c` (tripwire guard). S3-002 and S3-003 trained under the UNFIXED
+optimizer -- their gain-parameter values partially reflect this competing
+pressure between task gradient and unnecessary decay. S3-004 onward
+trained under the fix. This caveat must be carried into any comparison
+table or report that cites S3-002/S3-003's numbers.
