@@ -60,3 +60,20 @@ Roadmap/*/Reports/MASTER_LOG.md
 # Editors
 .vscode/
 .idea/
+
+# ---------------------------------------------------------------------------
+# Stage 3+ candidate results (2026-07-07): Stage 3 introduced a Results/S3-00X/
+# layout that supersedes the Outputs/Figures/Logs/ convention above for
+# per-candidate runs. Same policy: never commit generated artifacts, only
+# the generator (compare_candidates.py, run_stage3_queue.py, etc.).
+# Covers: logs/, mentor_eval/, mentor_eval_backup_*/, metadata.json, plots/*.png
+# under any Roadmap/<Stage>/Results/<candidate>/ directory.
+# ---------------------------------------------------------------------------
+Roadmap/*/Results/
+
+# Stray root-level Results/S3-00X/ directory (2026-07-07): confirmed a
+# genuine separate directory, not a duplicate of the Roadmap-nested one --
+# likely produced by a script invoked with a relative path instead of the
+# full Roadmap/... path. Ignored here as a stopgap; the underlying script
+# invocation should be fixed separately so this stops recurring.
+/Results/
