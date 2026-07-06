@@ -256,11 +256,24 @@ def load_candidate_row(run_id: str, variant: str) -> dict:
     return row
 
 
-def _resolve_baseline() -> tuple[Optional[float], dict]:
-    """Returns (baseline_accuracy, provenance_info). provenance_info states
-    plainly whether this came from a frozen, previously-written manifest
-    or was computed live (i.e. no frozen manifest exists on this machine
-    yet) -- never silently claim "checksum-verified" without one."""
+class MissingBaselineManifestError(RuntimeError):
+    pass
+
+
+def _resolve_baseline(require_manifest: bool = True) -> tuple[Optional[float], dict]:
+    """Returns (baseline_accuracy, provenance_info).
+
+    BUG FIX (2026-07-06): this used to silently fall back to a "COMPUTED
+    LIVE" checksum (computed from whatever checkpoint currently sits at
+    BASELINE_CKPT_PATH) when the frozen manifest was missing. That fallback
+    produces a baseline number that looks exactly like a normal, verified
+    one in the rendered table -- the checksum-manifest protocol exists
+    specifically so a comparison can be trusted as "against the exact
+    checkpoint that produced these numbers," and a live-computed
+    substitute defeats that silently. Now raises MissingBaselineManifestError
+    instead, unless the caller explicitly opts into the old best-effort
+    behavior via require_manifest=False (kept only for callers that
+    genuinely want a rough number and will label it themselves)."""
     baseline_metrics = _load_json(BASELINE_METRICS_PATH)
     baseline_accuracy = baseline_metrics["accuracy"] if baseline_metrics else None
 
@@ -271,18 +284,31 @@ def _resolve_baseline() -> tuple[Optional[float], dict]:
             "checkpoint_sha256": manifest.get("checkpoint_sha256"),
             "commit": manifest.get("git_commit"),
         }
-    else:
-        proc = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=str(REPO_ROOT), capture_output=True, text=True,
+        return baseline_accuracy, provenance
+
+    if require_manifest:
+        raise MissingBaselineManifestError(
+            f"No frozen baseline manifest at {BASELINE_MANIFEST_PATH}. "
+            f"Refusing to silently substitute a live-computed checksum -- that "
+            f"would produce a baseline number indistinguishable from a verified "
+            f"one in the rendered table, defeating the checksum-manifest "
+            f"protocol's entire purpose. Run mentor_eval.run_all against the "
+            f"intended baseline checkpoint to produce {BASELINE_MANIFEST_PATH.name} "
+            f"first, or call _resolve_baseline(require_manifest=False) explicitly "
+            f"if a rough, unverified number is genuinely what's wanted."
         )
-        provenance = {
-            "source": (
-                "COMPUTED LIVE -- no frozen outputs/mentor_review/baseline_manifest.json "
-                "found on this machine; run mentor_eval.run_all to produce one"
-            ),
-            "checkpoint_sha256": _sha256_file(BASELINE_CKPT_PATH),
-            "commit": proc.stdout.strip() if proc.returncode == 0 else "unknown",
-        }
+
+    proc = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=str(REPO_ROOT), capture_output=True, text=True,
+    )
+    provenance = {
+        "source": (
+            "COMPUTED LIVE -- no frozen outputs/mentor_review/baseline_manifest.json "
+            "found on this machine; run mentor_eval.run_all to produce one"
+        ),
+        "checkpoint_sha256": _sha256_file(BASELINE_CKPT_PATH),
+        "commit": proc.stdout.strip() if proc.returncode == 0 else "unknown",
+    }
     return baseline_accuracy, provenance
 
 
@@ -303,10 +329,12 @@ def _delta(row: dict, baseline_accuracy: Optional[float]) -> None:
 def write_markdown(rows: list[dict], baseline_accuracy: Optional[float], provenance: dict, out_path: Path) -> None:
     lines = []
     lines.append("# Stage 3 -- Cross-Candidate Comparison\n")
+    checksum_str = provenance["checkpoint_sha256"] or "unavailable"
+    commit_str = provenance["commit"] or "unavailable"
     lines.append(
         "All candidates evaluated via the identical `mentor_eval.classification_validation` "
         "pipeline against the frozen baseline manifest "
-        f"(checksum `{provenance['checkpoint_sha256']}`, commit `{provenance['commit']}`, "
+        f"(checksum `{checksum_str}`, commit `{commit_str}`, "
         f"source: {provenance['source']}). Optimizer-config column reflects whether the run's "
         "training commit predates the gain-parameter weight-decay fix "
         f"(`0294330`/`{OPTIMIZER_FIX_COMMIT}`).\n"
@@ -338,7 +366,21 @@ def write_csv(rows: list[dict], out_path: Path) -> None:
 
 def main() -> None:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    baseline_accuracy, provenance = _resolve_baseline()
+    try:
+        baseline_accuracy, provenance = _resolve_baseline()
+    except MissingBaselineManifestError as exc:
+        print("=" * 70)
+        print("ERROR: frozen baseline manifest missing -- Delta column NOT computed.")
+        print(str(exc))
+        print("Continuing to report per-candidate metrics (still valid on their")
+        print("own), but this comparison is NOT verified against a checksummed")
+        print("baseline until the manifest above is produced.")
+        print("=" * 70)
+        baseline_accuracy = None
+        provenance = {
+            "source": "ERROR -- baseline manifest missing, NOT computed live (see error banner above)",
+            "checkpoint_sha256": None, "commit": None,
+        }
 
     rows = build_rows()
     for row in rows:

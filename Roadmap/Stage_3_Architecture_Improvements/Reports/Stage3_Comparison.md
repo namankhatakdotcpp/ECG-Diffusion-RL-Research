@@ -1,6 +1,6 @@
 # Stage 3 -- Cross-Candidate Comparison
 
-All candidates evaluated via the identical `mentor_eval.classification_validation` pipeline against the frozen baseline manifest (checksum `16ac1715ac90ecb3db119de5611a3d2fff2cdc6ca82e53fb4d9c9c3a1864819d`, commit `5071ee81a481248321a222abada76b361e779279`, source: COMPUTED LIVE -- no frozen outputs/mentor_review/baseline_manifest.json found on this machine; run mentor_eval.run_all to produce one). Optimizer-config column reflects whether the run's training commit predates the gain-parameter weight-decay fix (`0294330`/`432395c`).
+All candidates evaluated via the identical `mentor_eval.classification_validation` pipeline against the frozen baseline manifest (checksum `unavailable`, commit `unavailable`, source: ERROR -- baseline manifest missing, NOT computed live (see error banner above)). Optimizer-config column reflects whether the run's training commit predates the gain-parameter weight-decay fix (`0294330`/`432395c`).
 
 **Baseline generated-data classifier metrics not found** (expected at `/Users/a7206035376/Desktop/HCL_Internship/ECG/outputs/mentor_review/classification_validation/classifier_generated_eval.json`) -- Delta column cannot be computed.
 

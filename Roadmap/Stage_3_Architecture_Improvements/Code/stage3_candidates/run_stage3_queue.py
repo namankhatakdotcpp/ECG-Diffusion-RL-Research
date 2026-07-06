@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -125,11 +126,29 @@ def run_candidate(run_id: str) -> None:
 
     # Reuse the EXISTING mentor_eval scripts, pointed at this candidate's
     # checkpoint via their own --ckpt/--out-dir flags -- no new harness.
+    #
+    # BUG FIX (2026-07-06): both classification_validation.py and
+    # similarity_metrics.py call utils.backup.snapshot_before_write(out_dir)
+    # on this SAME eval_dir. snapshot_before_write's own contract requires
+    # each caller to "own" the directory it snapshots -- it moves any
+    # existing content into a backup dir first if that content wasn't
+    # written by the CURRENT run_id (via the ECG_RUN_ID env var / .run_id
+    # marker file). Two separate subprocesses, each with no shared
+    # ECG_RUN_ID, generate two DIFFERENT run_ids -- so the second script
+    # invoked here saw the first script's freshly-written, correct output
+    # as "stale" and moved it into mentor_eval_backup_<timestamp>/ before
+    # writing its own (much smaller) output into a fresh mentor_eval/.
+    # Confirmed real data ended up silently relocated this way for
+    # multiple already-trained candidates. Fix: propagate ONE shared
+    # ECG_RUN_ID to both subprocesses so the second one correctly
+    # recognizes "already claimed by this run" and no-ops instead.
+    run_env = os.environ.copy()
+    run_env["ECG_RUN_ID"] = f"{run_id}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     try:
         for module in ("mentor_eval.classification_validation", "mentor_eval.similarity_metrics"):
             subprocess.run(
                 [sys.executable, "-m", module, "--ckpt", str(ckpt_path), "--out-dir", str(eval_dir)],
-                cwd=str(REPO_ROOT), check=True,
+                cwd=str(REPO_ROOT), check=True, env=run_env,
             )
     except subprocess.CalledProcessError as exc:
         write_metadata(run_id, variant, status="eval_failed", checkpoint_path=ckpt_path)

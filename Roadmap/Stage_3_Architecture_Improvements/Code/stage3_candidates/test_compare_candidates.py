@@ -171,6 +171,52 @@ def test_similarity_summary_missing_file_returns_all_none(tmp_path):
     assert summary == {"cosine": None, "mahalanobis": None, "bhattacharyya": None}
 
 
+# ── Baseline manifest: must fail loudly, never silently compute live ────
+
+def test_resolve_baseline_raises_when_manifest_missing(tmp_path, monkeypatch):
+    """Regression guard for the exact bug found in real GPU-server usage:
+    _resolve_baseline() used to silently fall back to a live-computed
+    checksum when BASELINE_MANIFEST_PATH didn't exist, producing a
+    baseline number indistinguishable from a verified one in the
+    rendered table. Must now raise instead."""
+    monkeypatch.setattr(cc, "BASELINE_MANIFEST_PATH", tmp_path / "nonexistent_manifest.json")
+    with pytest.raises(cc.MissingBaselineManifestError):
+        cc._resolve_baseline()
+
+
+def test_resolve_baseline_succeeds_with_real_manifest(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "baseline_manifest.json"
+    json.dump({"checkpoint_sha256": "abc123", "git_commit": "deadbeef"}, open(manifest_path, "w"))
+    monkeypatch.setattr(cc, "BASELINE_MANIFEST_PATH", manifest_path)
+    monkeypatch.setattr(cc, "BASELINE_METRICS_PATH", tmp_path / "nonexistent.json")
+    accuracy, provenance = cc._resolve_baseline()
+    assert provenance["source"] == "frozen baseline_manifest.json"
+    assert provenance["checkpoint_sha256"] == "abc123"
+    assert accuracy is None  # BASELINE_METRICS_PATH doesn't exist in this test, separate from the manifest
+
+
+def test_resolve_baseline_opt_out_still_computes_live(tmp_path, monkeypatch):
+    """require_manifest=False is kept for a caller that explicitly wants
+    the old best-effort behavior -- confirmed it still works, just isn't
+    the default anymore."""
+    monkeypatch.setattr(cc, "BASELINE_MANIFEST_PATH", tmp_path / "nonexistent_manifest.json")
+    accuracy, provenance = cc._resolve_baseline(require_manifest=False)
+    assert "COMPUTED LIVE" in provenance["source"]
+
+
+def test_main_continues_reporting_candidates_when_manifest_missing(tmp_path, monkeypatch, capsys):
+    """main() must not crash the whole report on a missing manifest --
+    per-candidate metrics are still valid on their own -- but it must
+    print an unmistakable error, not proceed silently."""
+    monkeypatch.setattr(cc, "RESULTS_ROOT", tmp_path / "results")
+    monkeypatch.setattr(cc, "REPORTS_DIR", tmp_path / "reports")
+    monkeypatch.setattr(cc, "BASELINE_MANIFEST_PATH", tmp_path / "nonexistent_manifest.json")
+    cc.main()
+    captured = capsys.readouterr()
+    assert "ERROR: frozen baseline manifest missing" in captured.out
+    assert (tmp_path / "reports" / "Stage3_Comparison.md").exists()
+
+
 # ── Subband/Sharma metrics: distinguishes "not computed" from "computed" ─
 
 def test_subband_summary_none_when_absent(tmp_path):
