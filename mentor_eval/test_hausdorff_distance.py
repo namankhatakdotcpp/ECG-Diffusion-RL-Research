@@ -11,7 +11,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from mentor_eval.hausdorff_distance import compute_hausdorff, compute_hausdorff_per_lead, N_LEADS
+from mentor_eval.hausdorff_distance import (
+    compute_hausdorff, compute_hausdorff_per_lead, matched_hausdorff, N_LEADS,
+)
 
 SIG_LEN = 1000
 
@@ -109,6 +111,21 @@ def test_symmetric():
     real = _real_signal()
     scaled = np.clip(real * 1.5, -4.0, 4.0)
     assert compute_hausdorff(real, scaled) == pytest.approx(compute_hausdorff(scaled, real))
+
+
+# ── matched_hausdorff (batch, nearest-neighbour matched) ────────────────
+
+def test_matched_hausdorff_real_vs_itself_is_zero():
+    rng = np.random.default_rng(0)
+    real = np.clip(rng.normal(0, 1, (50, SIG_LEN, N_LEADS)).astype(np.float32), -4.0, 4.0)
+    assert matched_hausdorff(real, real[:20]) == 0.0
+
+
+def test_matched_hausdorff_discriminates_noise():
+    rng = np.random.default_rng(0)
+    real = np.clip(rng.normal(0, 1, (50, SIG_LEN, N_LEADS)).astype(np.float32), -4.0, 4.0)
+    noise = np.clip(rng.normal(0, 2, (20, SIG_LEN, N_LEADS)).astype(np.float32), -4.0, 4.0)
+    assert matched_hausdorff(real, noise) > 0.0
 
 
 if __name__ == "__main__":

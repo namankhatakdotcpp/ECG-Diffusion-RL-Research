@@ -99,3 +99,26 @@ def compute_hausdorff(real_signal: np.ndarray, generated_signal: np.ndarray) -> 
     summary for a comparison table. Use compute_hausdorff_per_lead()
     directly for the per-lead breakdown."""
     return float(compute_hausdorff_per_lead(real_signal, generated_signal).mean())
+
+
+def matched_hausdorff(real_signals: np.ndarray, gen_signals: np.ndarray) -> float:
+    """(N_real, 1000, 12), (N_gen, 1000, 12) -> single float. For each
+    generated ECG, finds its nearest-neighbour real ECG using the EXACT
+    same matching convention as similarity_metrics.matched_cosine_similarity
+    (Euclidean distance on flattened, L2-normalised waveforms) -- so
+    "matched" means the same real/generated correspondence across every
+    metric in a disease-wise comparison table, not a different pairing
+    per metric. Averages compute_hausdorff() over all matched pairs."""
+    from scipy.spatial.distance import cdist
+
+    real_flat = real_signals.reshape(len(real_signals), -1)
+    gen_flat = gen_signals.reshape(len(gen_signals), -1)
+    real_norm = real_flat / (np.linalg.norm(real_flat, axis=1, keepdims=True) + 1e-8)
+    gen_norm = gen_flat / (np.linalg.norm(gen_flat, axis=1, keepdims=True) + 1e-8)
+
+    values = []
+    for i, g in enumerate(gen_norm):
+        dists = cdist(g[None, :], real_norm, metric="euclidean")[0]
+        nn_idx = int(np.argmin(dists))
+        values.append(compute_hausdorff(real_signals[nn_idx], gen_signals[i]))
+    return float(np.mean(values))
