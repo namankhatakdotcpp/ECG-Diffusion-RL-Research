@@ -197,6 +197,10 @@ def run(ckpt_path: Path, out_dir: Path, cfg, n_generated: int, seed: int, log) -
 
     md_lines = [
         "# Disease-wise Similarity Comparison\n",
+        "*Disease-wise similarity metrics between generated and real ECGs. "
+        "Hausdorff distance quantifies worst-case amplitude deviation only "
+        "and should not be interpreted as a morphology or temporal alignment "
+        "metric.*\n",
         "**4th-metric caveat**: the column below is provisional (Bhattacharyya "
         "distance, already computed elsewhere in this pipeline) -- NOT confirmed "
         "by Dr. Balaji as the intended 4th metric. The 2026-07-07 sync-up document "
