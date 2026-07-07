@@ -17,6 +17,17 @@ Usage:
     python run_stage3_queue.py S3-002 S3-003          # train + evaluate, in order given
     python run_stage3_queue.py --gate S3-002 S3-003   # only evaluate the gate (assumes
                                                        # both already trained + evaluated)
+    python run_stage3_queue.py --eval-only S3-002     # re-run ONLY the eval step for an
+                                                       # already-trained candidate (e.g. eval
+                                                       # crashed and needs a clean re-run) --
+                                                       # does NOT retrain. Every run_id here is
+                                                       # validated against VARIANT_BY_RUN_ID
+                                                       # before anything is created on disk --
+                                                       # a typo (e.g. a literal "S3-00X" left
+                                                       # over from a copy-pasted example command)
+                                                       # is rejected with a clear error instead
+                                                       # of silently creating a junk directory
+                                                       # for a candidate that doesn't exist.
 """
 
 from __future__ import annotations
@@ -95,6 +106,77 @@ def _attach_file_logging(log: logging.Logger) -> None:
 PRIMARY_METRIC_KEY = "accuracy"
 
 
+def _require_valid_run_id(run_id: str) -> str:
+    """Validates BEFORE anything touches disk. Regression guard for a real
+    incident (2026-07-06): a copy-pasted example command using "S3-00X" as
+    a shorthand placeholder (meaning "substitute the real candidate
+    number") was run literally, creating a genuine Results/S3-00X/
+    directory for a candidate that never existed, and independently
+    reproducing the snapshot_before_write ordering bug (below) against
+    made-up data. A plain `VARIANT_BY_RUN_ID[run_id]` KeyError would
+    eventually surface this, but only AFTER eval_dir.mkdir() already
+    created the junk directory -- validate first instead."""
+    if run_id not in VARIANT_BY_RUN_ID:
+        raise ValueError(
+            f"'{run_id}' is not a known candidate. Valid run_ids: "
+            f"{sorted(VARIANT_BY_RUN_ID)}. If this came from a copy-pasted "
+            f"example command, check for an unsubstituted placeholder "
+            f"(e.g. a literal 'S3-00X' or 'S3-0XX' left in place)."
+        )
+    return VARIANT_BY_RUN_ID[run_id]
+
+
+def _run_eval_pair(run_id: str, variant: str, ckpt_path: Path, log: logging.Logger) -> bool:
+    """Runs classification_validation.py then similarity_metrics.py against
+    ckpt_path, writing into Results/<run_id>/mentor_eval/. Returns True on
+    success, False on failure (metadata already written either way).
+    Shared by run_candidate() (train+eval) and run_eval_only() (re-eval an
+    already-trained candidate) so there is exactly one implementation of
+    the shared-ECG_RUN_ID fix below -- a second copy of this loop would be
+    exactly how the bug it fixes could reappear.
+
+    BUG FIX (2026-07-06): both classification_validation.py and
+    similarity_metrics.py call utils.backup.snapshot_before_write(out_dir)
+    on this SAME eval_dir. snapshot_before_write's own contract requires
+    each caller to "own" the directory it snapshots -- it moves any
+    existing content into a backup dir first if that content wasn't
+    written by the CURRENT run_id (via the ECG_RUN_ID env var / .run_id
+    marker file). Two separate subprocesses, each with no shared
+    ECG_RUN_ID, generate two DIFFERENT run_ids -- so the second script
+    invoked here saw the first script's freshly-written, correct output
+    as "stale" and moved it into mentor_eval_backup_<timestamp>/ before
+    writing its own (much smaller) output into a fresh mentor_eval/.
+    Confirmed real data ended up silently relocated this way for
+    multiple already-trained candidates -- including via a MANUAL
+    re-run of these two commands from the shell (this fix lived only in
+    run_candidate() before run_eval_only() existed, so a manual `python -m
+    mentor_eval.classification_validation ...` had no protection at all).
+    Fix: propagate ONE shared ECG_RUN_ID to both subprocesses so the
+    second one correctly recognizes "already claimed by this run" and
+    no-ops instead."""
+    eval_dir = RESULTS_ROOT / run_id / "mentor_eval"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+
+    run_env = os.environ.copy()
+    run_env["ECG_RUN_ID"] = f"{run_id}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    try:
+        for module in ("mentor_eval.classification_validation", "mentor_eval.similarity_metrics"):
+            subprocess.run(
+                [sys.executable, "-m", module, "--ckpt", str(ckpt_path), "--out-dir", str(eval_dir)],
+                cwd=str(REPO_ROOT), check=True, env=run_env,
+            )
+    except subprocess.CalledProcessError as exc:
+        write_metadata(run_id, variant, status="eval_failed", checkpoint_path=ckpt_path)
+        log.error(f"[{run_id}] evaluation failed ({exc}) -- checkpoint is valid, training for "
+                  f"the NEXT candidate will still proceed. Fix the evaluator and re-run "
+                  f"evaluation only for {run_id} via --eval-only; do not retrain.")
+        return False
+
+    write_metadata(run_id, variant, status="done", checkpoint_path=ckpt_path)
+    log.info(f"[{run_id}] done -- checkpoint={ckpt_path}, eval output={eval_dir}")
+    return True
+
+
 def run_candidate(run_id: str) -> None:
     """Train + evaluate one candidate. Train failures are FATAL (re-raised --
     stops the queue, per the existing STOP CONDITION semantics: an unknown
@@ -102,7 +184,7 @@ def run_candidate(run_id: str) -> None:
     marked "eval_failed" in metadata.json and swallowed here, so a broken
     evaluator on one candidate can never block unrelated candidates' training
     later in the same queue invocation."""
-    variant = VARIANT_BY_RUN_ID[run_id]
+    variant = _require_valid_run_id(run_id)
     cfg = load_config()
     log = get_logger(f"queue_{run_id}", cfg=cfg)
     _attach_file_logging(log)
@@ -121,44 +203,25 @@ def run_candidate(run_id: str) -> None:
         write_metadata(run_id, variant, status="train_failed")
         raise FileNotFoundError(f"[{run_id}] expected checkpoint not found: {ckpt_path}")
 
-    eval_dir = RESULTS_ROOT / run_id / "mentor_eval"
-    eval_dir.mkdir(parents=True, exist_ok=True)
+    _run_eval_pair(run_id, variant, ckpt_path, log)
 
-    # Reuse the EXISTING mentor_eval scripts, pointed at this candidate's
-    # checkpoint via their own --ckpt/--out-dir flags -- no new harness.
-    #
-    # BUG FIX (2026-07-06): both classification_validation.py and
-    # similarity_metrics.py call utils.backup.snapshot_before_write(out_dir)
-    # on this SAME eval_dir. snapshot_before_write's own contract requires
-    # each caller to "own" the directory it snapshots -- it moves any
-    # existing content into a backup dir first if that content wasn't
-    # written by the CURRENT run_id (via the ECG_RUN_ID env var / .run_id
-    # marker file). Two separate subprocesses, each with no shared
-    # ECG_RUN_ID, generate two DIFFERENT run_ids -- so the second script
-    # invoked here saw the first script's freshly-written, correct output
-    # as "stale" and moved it into mentor_eval_backup_<timestamp>/ before
-    # writing its own (much smaller) output into a fresh mentor_eval/.
-    # Confirmed real data ended up silently relocated this way for
-    # multiple already-trained candidates. Fix: propagate ONE shared
-    # ECG_RUN_ID to both subprocesses so the second one correctly
-    # recognizes "already claimed by this run" and no-ops instead.
-    run_env = os.environ.copy()
-    run_env["ECG_RUN_ID"] = f"{run_id}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
-    try:
-        for module in ("mentor_eval.classification_validation", "mentor_eval.similarity_metrics"):
-            subprocess.run(
-                [sys.executable, "-m", module, "--ckpt", str(ckpt_path), "--out-dir", str(eval_dir)],
-                cwd=str(REPO_ROOT), check=True, env=run_env,
-            )
-    except subprocess.CalledProcessError as exc:
-        write_metadata(run_id, variant, status="eval_failed", checkpoint_path=ckpt_path)
-        log.error(f"[{run_id}] evaluation failed ({exc}) -- checkpoint is valid, training for "
-                  f"the NEXT candidate will still proceed. Fix the evaluator and re-run "
-                  f"evaluation only for {run_id}; do not retrain.")
-        return
 
-    write_metadata(run_id, variant, status="done", checkpoint_path=ckpt_path)
-    log.info(f"[{run_id}] done -- checkpoint={ckpt_path}, eval output={eval_dir}")
+def run_eval_only(run_id: str) -> bool:
+    """Re-run ONLY the eval step for an already-trained candidate (--eval-only).
+    Requires the checkpoint to already exist -- does not train, does not
+    create a checkpoint directory for a candidate that was never trained."""
+    variant = _require_valid_run_id(run_id)
+    cfg = load_config()
+    log = get_logger(f"queue_{run_id}", cfg=cfg)
+    _attach_file_logging(log)
+
+    ckpt_path = RESULTS_ROOT / run_id / "checkpoints" / f"{run_id}_best.pt"
+    if not ckpt_path.exists():
+        raise FileNotFoundError(
+            f"[{run_id}] no checkpoint at {ckpt_path} -- --eval-only requires an "
+            f"already-trained candidate. Run without --eval-only to train first."
+        )
+    return _run_eval_pair(run_id, variant, ckpt_path, log)
 
 
 def evaluate_wave_gate(run_ids: list[str]) -> bool:
@@ -219,11 +282,17 @@ def main() -> None:
     parser.add_argument("run_ids", nargs="+", help="e.g. S3-002 S3-003")
     parser.add_argument("--gate", action="store_true",
                          help="only evaluate the gate for the given run_ids, do not train")
+    parser.add_argument("--eval-only", action="store_true",
+                         help="re-run only the eval step for already-trained candidates, do not train")
     args = parser.parse_args()
 
     if args.gate:
         proceed = evaluate_wave_gate(args.run_ids)
         sys.exit(0 if proceed else 1)
+
+    if args.eval_only:
+        results = {run_id: run_eval_only(run_id) for run_id in args.run_ids}
+        sys.exit(0 if all(results.values()) else 1)
 
     for run_id in args.run_ids:
         run_candidate(run_id)
