@@ -18,15 +18,28 @@ no precedent anywhere else in this pipeline (Mahalanobis/Bhattacharyya
 operate on summary statistics with no time axis; cosine similarity is a
 fixed-index dot product with no explicit temporal-tolerance mechanism
 either). Amplitude-only avoids that problem and is unit-consistent by
-construction. This complements (does not duplicate) the existing
-similarity_metrics.py trio: it captures worst-case per-lead amplitude-
-range/outlier mismatch, which none of cosine/Mahalanobis/Bhattacharyya
-directly measure.
+construction.
+
+Hausdorff distance is included as a worst-case amplitude deviation
+metric. It complements cosine similarity, Mahalanobis distance, and
+Bhattacharyya distance by quantifying the maximum amplitude mismatch
+between matched real and generated ECGs. It is not intended to evaluate
+temporal alignment or waveform morphology.
 
 Explicit limitation, stated rather than hidden: this metric is ORDER-
 BLIND -- it does not capture morphology or timing (where peaks occur).
 Two signals with identical amplitude range but completely different
 shape would score as similar. Report this alongside any number.
+
+Nearest-neighbour pairing (matched_hausdorff, below): generated ECGs are
+compared against their nearest-neighbour real ECG within the same
+disease class (via Euclidean distance in the 12000-dim raw waveform
+space) rather than random or index-aligned pairing. This reduces
+pairing bias -- comparing a generated sample against an arbitrary or
+poorly-matched real sample would inflate distance values for reasons
+unrelated to generation quality -- and maintains consistency with the
+existing cosine similarity evaluation protocol in similarity_metrics.py,
+which uses the same matching convention.
 
 Bounds: given the project's fixed z-score-and-clip-to-[-4,4] preprocessing
 convention (config.yaml: preprocessing.clip_range), every per-lead value

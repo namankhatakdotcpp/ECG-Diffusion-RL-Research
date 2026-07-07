@@ -34,13 +34,27 @@ construction.
 
 ### What it captures, and what it explicitly does not
 
-Captures: whether generated amplitude excursions, per lead, stay within the
-real signal's actual dynamic range -- a worst-case (not average-case)
-statistic sensitive to a single outlier sample by design.
+Hausdorff distance is included as a worst-case amplitude deviation metric.
+It complements cosine similarity, Mahalanobis distance, and Bhattacharyya
+distance by quantifying the maximum amplitude mismatch between matched real
+and generated ECGs. It is not intended to evaluate temporal alignment or
+waveform morphology.
 
 **Does not capture morphology or timing.** This is a real, stated
 limitation, not an oversight -- see Verification Case 2 below, where it is
 made concrete rather than left abstract.
+
+### Nearest-neighbour pairing (methodology)
+
+Generated ECGs are compared against their nearest-neighbour real ECG within
+the same disease class (via Euclidean distance in the 12000-dim raw
+waveform space) rather than random or index-aligned pairing
+(`mentor_eval/hausdorff_distance.py`'s `matched_hausdorff`). This reduces
+pairing bias -- comparing a generated sample against an arbitrary or
+poorly-matched real sample would inflate distance values for reasons
+unrelated to generation quality -- and maintains consistency with the
+existing cosine similarity evaluation protocol in `similarity_metrics.py`,
+which uses the same matching convention.
 
 ### Expected value range
 
@@ -88,6 +102,16 @@ measures worst-case amplitude deviation. It is intentionally not used as a
 temporal or morphological similarity metric; those aspects are evaluated
 separately through classifier performance, cosine similarity, Mahalanobis
 distance, and waveform visualizations.
+
+The reported Hausdorff value is a mean across 12 leads. Given this
+project's Stage 3 finding that disease-discriminative failure concentrates
+in specific frequency subbands and is most visually apparent in Lead V1, a
+per-lead breakdown (rather than a single averaged value) may reveal
+amplitude-range anomalies this aggregate metric obscures. Recommend
+per-lead reporting as a follow-up if Hausdorff is retained beyond this
+initial deliverable -- `compute_hausdorff_per_lead()` already exists in
+`hausdorff_distance.py` for this purpose, it just isn't wired into the
+disease-wise table's output yet.
 
 ## Recommendation for Future Work
 

@@ -201,11 +201,25 @@ def run(ckpt_path: Path, out_dir: Path, cfg, n_generated: int, seed: int, log) -
         "distance, already computed elsewhere in this pipeline) -- NOT confirmed "
         "by Dr. Balaji as the intended 4th metric. The 2026-07-07 sync-up document "
         "lists this as \"to be finalized,\" not decided.\n",
-        "**Hausdorff Distance caveat**: computed over amplitude values only, "
-        "therefore measures worst-case amplitude deviation. Intentionally not "
-        "used as a temporal or morphological similarity metric; those aspects "
-        "are evaluated separately through classifier performance, cosine "
-        "similarity, Mahalanobis distance, and waveform visualizations.\n",
+        "**Hausdorff Distance caveat**: Hausdorff distance is included as a "
+        "worst-case amplitude deviation metric. It complements cosine "
+        "similarity, Mahalanobis distance, and Bhattacharyya distance by "
+        "quantifying the maximum amplitude mismatch between matched real and "
+        "generated ECGs. It is not intended to evaluate temporal alignment or "
+        "waveform morphology.\n",
+        "**Nearest-neighbour pairing**: generated ECGs are compared against "
+        "their nearest-neighbour real ECG within the same disease class (via "
+        "Euclidean distance in the 12000-dim raw waveform space) rather than "
+        "random or index-aligned pairing. This reduces pairing bias and "
+        "maintains consistency with the existing cosine similarity evaluation "
+        "protocol in similarity_metrics.py, which uses the same matching "
+        "convention.\n",
+        "**Lead-averaging caveat**: the Hausdorff value reported per disease "
+        "is a mean across 12 leads. Given this project's Stage 3 finding that "
+        "disease-discriminative failure concentrates in specific frequency "
+        "subbands and is most visually apparent in Lead V1, a per-lead "
+        "breakdown may reveal amplitude-range anomalies this aggregate "
+        "obscures -- see compute_hausdorff_per_lead() in hausdorff_distance.py.\n",
         "\n".join(table_lines),
     ]
     (out_dir / "disease_similarity_table.md").write_text("\n".join(md_lines) + "\n")
