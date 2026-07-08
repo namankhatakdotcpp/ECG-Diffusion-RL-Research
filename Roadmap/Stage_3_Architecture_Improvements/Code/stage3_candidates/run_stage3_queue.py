@@ -160,7 +160,11 @@ def _run_eval_pair(run_id: str, variant: str, ckpt_path: Path, log: logging.Logg
     run_env = os.environ.copy()
     run_env["ECG_RUN_ID"] = f"{run_id}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     try:
-        for module in ("mentor_eval.classification_validation", "mentor_eval.similarity_metrics"):
+        for module in (
+            "mentor_eval.classification_validation",
+            "mentor_eval.similarity_metrics",
+            "mentor_eval.disease_similarity_table",
+        ):
             subprocess.run(
                 [sys.executable, "-m", module, "--ckpt", str(ckpt_path), "--out-dir", str(eval_dir)],
                 cwd=str(REPO_ROOT), check=True, env=run_env,
