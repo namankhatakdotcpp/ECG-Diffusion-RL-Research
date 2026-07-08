@@ -164,6 +164,7 @@ def _run_eval_pair(run_id: str, variant: str, ckpt_path: Path, log: logging.Logg
             "mentor_eval.classification_validation",
             "mentor_eval.similarity_metrics",
             "mentor_eval.disease_similarity_table",
+            "mentor_eval.subband_similarity_metrics",
         ):
             subprocess.run(
                 [sys.executable, "-m", module, "--ckpt", str(ckpt_path), "--out-dir", str(eval_dir)],
