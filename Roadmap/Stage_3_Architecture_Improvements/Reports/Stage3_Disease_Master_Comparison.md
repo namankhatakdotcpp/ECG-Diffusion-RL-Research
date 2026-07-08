@@ -1,12 +1,12 @@
 # Stage 3 -- Disease-wise Master Comparison
 
-*0/6 candidates evaluated. AFIB excluded from this table -- no trained diffusion class project-wide, not a missing data point (see mentor_eval/disease_similarity_table.py). Rows for un-evaluated candidates are left blank, not fabricated.*
+*5/6 candidates evaluated. AFIB excluded from this table -- no trained diffusion class project-wide, not a missing data point (see mentor_eval/disease_similarity_table.py). Rows for un-evaluated candidates are left blank, not fabricated.*
 
 | Candidate | Normal Cos | Normal Maha | Normal Haus | Normal Bhat | STEMI Cos | STEMI Maha | STEMI Haus | STEMI Bhat | NSTEMI Cos | NSTEMI Maha | NSTEMI Haus | NSTEMI Bhat | Status |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| S3-001 | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | not yet evaluated -- no disease_similarity_table.csv found |
-| S3-002 | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | not yet evaluated -- no disease_similarity_table.csv found |
-| S3-003 | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | not yet evaluated -- no disease_similarity_table.csv found |
-| S3-004 | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | not yet evaluated -- no disease_similarity_table.csv found |
-| S3-005 | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | not yet evaluated -- no disease_similarity_table.csv found |
+| S3-001 | 0.1524 | 8.8807 | 0.4632 | 9.5222 | 0.1327 | 8.5779 | 0.5259 | 9.5379 | 0.1335 | 8.3244 | 0.7421 | 10.6964 | done |
+| S3-002 | 0.1537 | 9.6867 | 0.4733 | 8.3427 | 0.1327 | 10.4507 | 0.4972 | 9.0795 | 0.1364 | 9.3591 | 0.7739 | 9.8427 | done |
+| S3-003 | 0.1552 | 9.9742 | 0.4531 | 8.8227 | 0.14 | 11.3642 | 0.5246 | 9.7968 | 0.1365 | 11.1136 | 0.8208 | 11.141 | done |
+| S3-004 | 0.155 | 8.5934 | 0.474 | 7.8566 | 0.1413 | 9.233 | 0.5308 | 8.8831 | 0.1347 | 8.7703 | 0.8203 | 9.8257 | done |
+| S3-005 | 0.1491 | 10.9722 | 0.4586 | 9.0505 | 0.1333 | 10.8907 | 0.517 | 9.3141 | 0.1367 | 10.9714 | 0.7797 | 11.0364 | done |
 | S3-006 | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | not yet evaluated -- no disease_similarity_table.csv found |
