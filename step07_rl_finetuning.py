@@ -1062,7 +1062,11 @@ def _report_smoke_test_results(
 # Training loop
 # ──────────────────────────────────────────────────────────────────────────────
 
-def train(cfg, log, smoke_test: bool = False) -> float:
+def train(
+    cfg, log, smoke_test: bool = False,
+    n_iterations_override: Optional[int] = None,
+    run_tag: Optional[str] = None,
+) -> float:
     """
     smoke_test=True runs a short (`rl.smoke_test_iterations`, default 10)
     correctness check instead of the full schedule: does the policy actually
@@ -1071,6 +1075,16 @@ def train(cfg, log, smoke_test: bool = False) -> float:
     to select/stop on in 10 iterations); collects parameter-checksum,
     KL/reward trend, grad_norm, and reward-latency diagnostics and writes
     them to outputs/results/smoke_test_report.json.
+
+    n_iterations_override: run exactly this many iterations instead of
+    `rl.rl_iterations` (config.yaml) or `rl.smoke_test_iterations` — for a
+    validation-length run (e.g. Gate 3's 100-250 updates) that's neither
+    the smoke test nor a full training run's default length. Ignored if
+    smoke_test=True (that always uses rl.smoke_test_iterations).
+
+    run_tag: if set, checkpoints/logs/results this run WRITES (not the
+    diffusion_best.pt it reads) go under a subdirectory named `run_tag` —
+    see the "Output isolation" block below for exactly what that covers.
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     log.info(f"Device: {device}")
@@ -1103,6 +1117,27 @@ def train(cfg, log, smoke_test: bool = False) -> float:
         raise FileNotFoundError(f"{best_path} not found. Run step04 first.")
     log.info(f"Loading {best_path.name} …")
     ckpt = torch.load(str(best_path), map_location=device)
+
+    # ── Output isolation (--run-tag) ────────────────────────────────────────
+    # Re-point WRITE paths only, after reading the frozen baseline above --
+    # diffusion_best.pt always comes from the untagged models dir. Every
+    # checkpoint/log/result this run writes (rl_ckpt_iter*.pt,
+    # diffusion_rl_best.pt, diffusion_rl_selected.pt, reward_hacking_alert.pt,
+    # rl_training_log.csv, progress plots, smoke_test_report.json,
+    # checkpoint_metrics.json) lands under the tag instead, so a longer
+    # validation run's checkpoints can't collide with / be silently
+    # overwritten by a later run that reuses the same iteration numbers.
+    if run_tag:
+        models_dir  = models_dir / run_tag
+        results_dir = results_dir / run_tag
+        logs_dir    = logs_dir / run_tag
+        for d in (models_dir, results_dir, logs_dir):
+            d.mkdir(parents=True, exist_ok=True)
+        log.info(
+            f"--run-tag={run_tag!r}: writing checkpoints/logs/results under "
+            f"this tag ({models_dir}, {results_dir}, {logs_dir}). Reads "
+            f"diffusion_best.pt from the untagged models dir (already loaded above)."
+        )
 
     # Policy model — updated during RL
     policy_model = ECGTransformerDiffusion(cfg, n_classes=n_classes).to(device)
@@ -1177,9 +1212,12 @@ def train(cfg, log, smoke_test: bool = False) -> float:
 
     n_rollouts   = int(rl.n_rollouts)
     n_ppo_epochs = int(rl.n_ppo_epochs)
-    n_iterations = (
-        int(rl.get("smoke_test_iterations", 10)) if smoke_test else int(rl.rl_iterations)
-    )
+    if smoke_test:
+        n_iterations = int(rl.get("smoke_test_iterations", 10))
+    elif n_iterations_override is not None:
+        n_iterations = int(n_iterations_override)
+    else:
+        n_iterations = int(rl.rl_iterations)
 
     # ── CSV log ───────────────────────────────────────────────────────────────
     log_path = logs_dir / "rl_training_log.csv"
@@ -1592,13 +1630,34 @@ def main() -> None:
              "updates under PPO/GRPO before committing GPU-hours to a real run. "
              "See outputs/results/smoke_test_report.json for the result.",
     )
+    parser.add_argument(
+        "--n-iterations", type=int, default=None,
+        help="Run exactly this many iterations instead of rl.rl_iterations "
+             "(config.yaml) — for a validation-length run (e.g. Gate 3's "
+             "100-250 updates) shorter than a full training run but longer "
+             "than --smoke-test. Ignored if --smoke-test is also passed.",
+    )
+    parser.add_argument(
+        "--run-tag", type=str, default=None,
+        help="Write this run's checkpoints/logs/results (rl_ckpt_iter*.pt, "
+             "diffusion_rl_best.pt, rl_training_log.csv, progress plots, "
+             "smoke_test_report.json, checkpoint_metrics.json) under a "
+             "subdirectory with this name inside each of outputs/models/, "
+             "logs/, and outputs/results/ — so a validation run's outputs "
+             "can't collide with / be silently overwritten by a later run "
+             "that reuses the same iteration numbers. Still reads "
+             "diffusion_best.pt from the untagged models dir.",
+    )
     args = parser.parse_args()
 
     cfg = load_config()
     log = get_logger("step07_rl_finetuning", cfg=cfg)
     set_seed(int(cfg.seeds[0]))
 
-    best_reward = train(cfg, log, smoke_test=args.smoke_test)
+    best_reward = train(
+        cfg, log, smoke_test=args.smoke_test,
+        n_iterations_override=args.n_iterations, run_tag=args.run_tag,
+    )
     if args.smoke_test:
         print("✓ Smoke test complete — see outputs/results/smoke_test_report.json")
     else:

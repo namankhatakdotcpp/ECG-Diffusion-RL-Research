@@ -955,3 +955,100 @@ small tolerance band, `second_half >= first_half - epsilon` with
 GPU confirmation of the actual fix (the baseline bias correction) takes
 priority over tightening this check's strictness, per explicit
 instruction.
+
+## GATE 2 CLOSED — confirmed on GPU (class-adjusted delta -0.0009, consistent with local -fix result)
+
+GPU run: raw delta -0.0081, class-adjusted delta -0.0009 (vs -0.0233
+pre-fix) — both essentially noise-level, consistent with the local CPU
+result (-0.0001 / +0.0073) in direction and magnitude. Two independent
+environments now agree the bias-correction fix resolved the substantive
+issue; the remaining `[FAIL]` on both runs is the documented zero-
+tolerance boundary artifact, already logged above as a deferred TODO.
+Gate 2 treated as closed.
+
+## Gate 3 setup: --n-iterations and --run-tag added to step07_rl_finetuning.py
+
+Two CLI flags added, read-only investigation questions answered, nothing
+run at length yet (per instruction: confirm setup, don't launch 250
+iterations without review).
+
+**1. Exact invocation.** New `--n-iterations N` overrides `rl.rl_iterations`
+(config.yaml) without editing the file — `train()` gained an
+`n_iterations_override` param; the CLI wires it through. Ignored if
+`--smoke-test` is also passed (that always uses `rl.smoke_test_iterations`).
+For Gate 3:
+
+    python step07_rl_finetuning.py --n-iterations 250 --run-tag gate3_250
+
+**2. Checkpointing / overwrite risk — real gap, now fixed with `--run-tag`.**
+Confirmed the honest answer to "would this run's outputs get silently
+overwritten by a later real run": YES, previously — `rl_ckpt_iter{it:04d}.pt`,
+`diffusion_rl_best.pt`, `diffusion_rl_selected.pt`, and `rl_training_log.csv`
+all write to fixed paths under `outputs/models/` / `logs/` / `outputs/results/`
+with no run-level isolation; a later run reusing the same iteration numbers
+(e.g. any run past iteration 10, 20, ..., 250) would silently overwrite
+Gate 3's files.
+
+Added `--run-tag NAME`: re-points every WRITE path (not the `diffusion_
+best.pt` READ, which always comes from the untagged models dir — verified
+by inspecting the exact insertion point, right after the checkpoint load)
+to a `NAME` subdirectory under each of `outputs/models/`, `logs/`,
+`outputs/results/`. **Verified with a real 1-iteration run**
+(`--n-iterations 1 --run-tag gate3_dryrun`, real checkpoint/data, CPU):
+confirmed `outputs/models/gate3_dryrun/diffusion_rl_best.pt` and
+`logs/gate3_dryrun/rl_training_log.csv` were created, and confirmed (via
+directory listing) that NO untagged files were written — isolation works
+as intended, not just as designed.
+
+At `save_every_iters: 10` (default, unchanged), 250 iterations produces
+25 periodic `rl_ckpt_iter*.pt` files. Measured `diffusion_rl_best.pt`
+(no optimiser state) at 67.5MB; periodic checkpoints additionally save
+`opt: opt.state_dict()` (Adam moment buffers), likely closer to
+`diffusion_best.pt`'s measured 129MB — so ~25 x ~130MB ≈ **3.2GB** of
+checkpoint disk usage for this run alone. Worth knowing before launching,
+not itself a blocker.
+
+`eval_checkpoints` (default `[250, 500, 1000, 2000, 5000]`) includes 250
+— a 250-iteration Gate 3 run WILL trigger exactly one lightweight
+checkpoint eval (frozen TRTR classifier confidence + A3 reward, no
+retrain) at the final iteration. `full_eval_checkpoints` (default
+`[1000, 5000]`) does NOT include anything <=250, so the multi-minute
+Mentor Classifier retrain will NOT fire during this run — confirmed, not
+assumed.
+
+**3. Diagnostics logged over 250 iterations.** `rl_training_log.csv` is
+written every iteration regardless of run length (`iter, class,
+reward_total, r_morph, r_hrv, r_real, r_diag, r_a3, contrib_*, kl, loss,
+lr, policy_loss, ratio, clip_fraction, grad_norm, advantage_mean/std,
+logprob_std, reward_mean/std`) — same per-iteration instrumentation as the
+smoke test, just for however many iterations actually run. The smoke
+test's OTHER artifacts (`smoke_test_report.json` with PASS/FAIL checks,
+`smoke_test_diagnostics.png`, the same-seed before/after comparison) are
+smoke-test-exclusive and won't be produced for a plain `--n-iterations`
+run — there's no equivalent "final verdict" file for a longer run.
+**`diagnose_smoke_test_reward_trend.py` (already generic, takes any
+`--csv` path) can be pointed at this run's `logs/gate3_250/
+rl_training_log.csv`** to get the same raw/class-adjusted first-vs-
+second-half analysis at n=250 instead of n=10 — recommended as the
+follow-up analysis step, reusing existing tooling rather than building
+something new.
+
+**4. Wall-clock estimate — extrapolated, not measured on GPU, flagged as
+such.** Local CPU (Apple M3, no CUDA) timing from the 10-iteration smoke
+test: ~92.6s/iteration average. At that rate, 250 iterations would be
+~6.4 hours — not a CPU-feasible number, included only as the baseline
+being extrapolated from. GPU speedup for a model this size is plausibly
+5-15x depending on `himtenduh`'s hardware and whether generation is
+GPU-memory-bound or kernel-launch-overhead-bound at this batch size, which
+is not something to guess precisely. Rough range: **25 minutes to 1.5
+hours**, wide because it's an extrapolation. Additional factor not in the
+CPU baseline calibration: `plot_every_iters: 5` (default, unchanged) means
+50 progress-plot calls over 250 iterations, each generating up to 30 DDIM
+samples at `ddim_steps=50` (2.5x more steps than a training rollout's 20)
+— per-call this is heavier than a single training iteration's rollout
+cost, so plotting could be a non-trivial fraction of total time, not just
+training. **Recommend a short calibration run first**
+(`--n-iterations 10 --run-tag gate3_timing_check` on the actual GPU,
+time it directly) rather than committing to the full 250 on an
+extrapolated estimate — cheap (same cost as the smoke test) and turns
+this range into a real number specific to `himtenduh`.
