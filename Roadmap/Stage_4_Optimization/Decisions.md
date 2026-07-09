@@ -944,3 +944,14 @@ genuinely useful independent data point that the fix removes the
 quantified cold-start bias and correlates with a much flatter reward
 trend, but not a substitute for confirming the same on the actual Gate 2
 GPU environment before treating this as fully resolved.
+
+**Flagged, NOT fixed yet (low priority, deferred until after GPU
+confirmation)**: `reward_did_not_degrade_first_vs_second_half` uses a
+zero-tolerance `second_half >= first_half` comparison. On the post-fix
+local run this produced `[FAIL]` for a `-0.0001` difference — a
+boundary/rounding-level artifact, not a real decline. Proposed fix: a
+small tolerance band, `second_half >= first_half - epsilon` with
+`epsilon` in the 0.005-0.01 range. Deliberately not implemented yet —
+GPU confirmation of the actual fix (the baseline bias correction) takes
+priority over tightening this check's strictness, per explicit
+instruction.
