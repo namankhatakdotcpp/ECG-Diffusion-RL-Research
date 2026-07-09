@@ -245,7 +245,46 @@ class DDPOTrainer:
         self.grad_clip      = float(rl.grad_clip)
         self.baseline       = 0.0
         self.baseline_decay = float(rl.baseline_decay)
+        self.baseline_step  = 0     # Adam-style bias-correction counter, see
+                                     # _bias_corrected_baseline. Starts at 0
+                                     # (incremented to 1 before first use) and
+                                     # is NOT persisted across checkpoints --
+                                     # this trainer object is reconstructed
+                                     # fresh on every run (self.baseline
+                                     # itself is not saved/restored in any
+                                     # checkpoint dict either), so a resumed
+                                     # run correctly restarts the correction
+                                     # from t=0 along with a fresh baseline,
+                                     # not a stale t paired with an old one.
         self.lp_K           = 10    # timesteps sampled for log-prob proxy
+
+    def _update_and_bias_correct_baseline(self, r: float) -> float:
+        """
+        Update the EMA baseline with reward r, then return the Adam-style
+        bias-corrected estimate for use in this step's advantage.
+
+        Quantified problem this fixes (Roadmap/Stage_4_Optimization/
+        Decisions.md): with baseline initialized to 0.0 and no correction,
+        the weight still resting on that 0.0 init after k updates is
+        `decay^k` -- 85% after 16 updates (1 smoke-test iteration), 20%
+        still at the end of a 10-iteration smoke test, 37% at k=100 and
+        ~8% at k=250 (squarely inside the planned Gate 3 validation range)
+        -- not a cold-start artifact a longer run washes out on its own.
+
+        baseline_hat = baseline / (1 - decay^t), t starting at 1 (matches
+        Adam's bias correction exactly). At t=1 this fully cancels the
+        (1-decay) weight the first sample would otherwise be down-weighted
+        by; as t -> large, decay^t -> 0 and baseline_hat -> baseline, so
+        long-run behaviour (decay=0.99, unchanged per this fix's scope) is
+        identical to before -- only the early/mid-run bias is removed.
+        """
+        self.baseline = (
+            self.baseline_decay * self.baseline
+            + (1.0 - self.baseline_decay) * r
+        )
+        self.baseline_step += 1
+        correction = 1.0 - self.baseline_decay ** self.baseline_step
+        return self.baseline / correction
 
     @torch.no_grad()
     def collect_rollouts(self, n_rollouts: int, class_idx: int) -> list[dict]:
@@ -332,12 +371,9 @@ class DDPOTrainer:
                 lp_old = ro["lp_old"]     # float (snapshot at rollout time)
                 r      = ro["reward"]["total"]
 
-                # EMA baseline
-                self.baseline = (
-                    self.baseline_decay * self.baseline
-                    + (1.0 - self.baseline_decay) * r
-                )
-                advantage = float(r - self.baseline)
+                # Bias-corrected EMA baseline (see _update_and_bias_correct_baseline)
+                baseline_hat = self._update_and_bias_correct_baseline(r)
+                advantage = float(r - baseline_hat)
 
                 # Log prob under current policy (differentiable)
                 lp_new = _score_log_prob(

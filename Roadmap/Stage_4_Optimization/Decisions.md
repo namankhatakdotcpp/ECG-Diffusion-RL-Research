@@ -878,3 +878,69 @@ per-class baseline (removes the class-non-stationarity compounding
 factor) or a faster initial decay that anneals toward 0.99 (a warmup
 schedule). No hyperparameter or code changed this round — read-only
 investigation only, per instruction.
+
+## Bias-corrected EMA baseline: implemented, unit-tested, and re-run locally
+
+Approved and implemented (`step07_rl_finetuning.py`, `DDPOTrainer`):
+`_update_and_bias_correct_baseline(r)` updates `self.baseline` exactly as
+before, then returns `baseline / (1 - decay^t)` (Adam-style correction,
+`t = self.baseline_step`, incremented per call, starting at 1). `advantage
+= r - baseline_hat` replaces `advantage = r - self.baseline`. Only one
+call site existed (confirmed via grep) — no other reads of `self.baseline`
+anywhere in the file. Scoped exactly as instructed: `decay=0.99` unchanged,
+no per-class baseline, no warmup schedule — those remain open,
+unevaluated options, not bundled in.
+
+`self.baseline_step` is not persisted in any checkpoint dict (confirmed —
+`self.baseline` itself never was either), and `DDPOTrainer` is
+reconstructed fresh on every run, so a resumed run correctly restarts
+`t=0` alongside a fresh `baseline=0.0` — no stale-`t`-paired-with-old-
+baseline risk.
+
+**Unit-tested** (`test_bias_corrected_baseline.py`, 5/5 PASSED,
+`.venv/bin/pytest`, standalone re-implementation of the exact formula, not
+mocked): confirms the raw EMA still shows the documented 85%/45%/20%
+residual-bias pattern (ruling out that the bug description itself was
+wrong); confirms `baseline_hat` is within 5% of a constant true reward by
+every `t` from 1 to 10 (in fact <1% off by `t=16`); confirms long-run
+behaviour is unchanged (`decay^t -> 0` as `t -> large`, verified out to
+`t=2000`); and a source-inspection test that fails loudly if the real
+implementation in `step07_rl_finetuning.py` ever drifts from the formula
+this test suite assumes.
+
+**Re-ran the 10-iteration smoke test locally** (real PTB-XL data + real
+`diffusion_best.pt`, CPU, `.venv/bin/python step07_rl_finetuning.py
+--smoke-test` — a fresh, independent run, not a replay of the earlier
+GPU run's exact rollout sequence, since generation is stochastic):
+
+    class sequence: NORM HYP CD STTC STTC OTHER NORM HYP MI NORM
+    raw first-half mean  = 0.4339
+    raw second-half mean = 0.4338
+    raw delta = -0.0001            (previously, GPU pre-fix: -0.0158)
+
+    class-adjusted delta = +0.0073  (previously, GPU pre-fix: -0.0233)
+
+Reporting honestly, not spinning it: the raw delta is now effectively
+zero (two orders of magnitude smaller than the pre-fix GPU run), and the
+class-adjusted delta flipped from negative to positive — no decline once
+class is controlled for. `reward_did_not_degrade_first_vs_second_half`
+STILL technically reports `[FAIL]` in this run, because the check's
+`second_half >= first_half` condition has no tolerance and 0.43381 is a
+hair below 0.43390 — this is now a boundary/rounding-level difference,
+not the same kind of finding as the original -0.0158/-0.0233 decline. Two
+individual classes (NORM, STTC) still show a nominal within-class decline
+across their own 2-3 occurrences each — at this sample size, not
+distinguishable from noise (same caveat the diagnostic tool states every
+time). Other checks: `policy_params_changed` PASS, `kl_nonzero_at_some_
+point` PASS (peaked 0.0078 this run), `grad_norm_never_zero` PASS,
+`same_seed_samples_measurably_differ` PASS (L2=21.06, cosine=0.926,
+reward_frozen=0.503 vs reward_policy=0.506 — smaller divergence than the
+pre-fix GPU run's L2=106.09, consistent with a less erratic, more
+stable policy update under the corrected baseline, though this is one
+data point, not a controlled comparison).
+
+**This is a local CPU run, not the planned GPU/`himtenduh` run** — a
+genuinely useful independent data point that the fix removes the
+quantified cold-start bias and correlates with a much flatter reward
+trend, but not a substitute for confirming the same on the actual Gate 2
+GPU environment before treating this as fully resolved.
