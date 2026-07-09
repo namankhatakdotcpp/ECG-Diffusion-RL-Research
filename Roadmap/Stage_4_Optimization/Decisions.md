@@ -49,13 +49,27 @@ synthetic distribution that this classifier latched onto, independent
 of its raw accuracy figure (which is also not available locally --
 never run/logged outside the GPU environment).
 
-Open decision, NOT yet resolved: either (a) train a genuine TRTR
-classifier on real data and save it (small step05 change: pass
-`save_path` for the TRTR branch too), and use that for
-`DiagnosticUtilityReward` instead of `tstr_classifier.pt`, or (b) use
-the Mentor Classifier directly if rollout-time speed/differentiability
-allows it. Do not proceed with `tstr_classifier.pt` as-is without
-addressing this.
+RESOLVED: train a genuine TRTR classifier on real data and save it
+(small `step05_baseline_eval.py` change: pass `save_path` for the TRTR
+branch too, mirroring how the TSTR branch already does it), and use
+that frozen checkpoint for `DiagnosticUtilityReward` instead of
+`tstr_classifier.pt`.
+
+The alternative (use the Mentor Classifier directly) is confirmed NOT
+viable -- verified directly from source, not assumed:
+`mentor_eval/classification_validation.py:114`'s `train_classifier` is
+invoked fresh under "Stage 1: training classifier on real PTB-XL data"
+on every single run of that script (30 epochs), with no
+`torch.save`/checkpoint mechanism for the classifier itself anywhere in
+that file (the only checkpoint loading there is for the diffusion
+model, a separate thing). Retraining a 30-epoch classifier at every RL
+rollout step is computationally infeasible, so the Mentor Classifier
+cannot be used live in the reward loop as-is.
+
+Before the new TRTR classifier is trusted as a reward signal, its own
+held-out accuracy/macro-F1 must be measured and logged here -- same bar
+as the Mentor Classifier's 83.31%/0.9495. No classifier anchors 35%+ of
+the reward signal without a number attached to how reliable it is.
 
 Hard constraint (unchanged, independent of which classifier is chosen
 for reward): Phase 4 (post-RL re-evaluation) must use ONLY the Mentor
