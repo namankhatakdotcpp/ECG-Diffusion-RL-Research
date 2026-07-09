@@ -49,11 +49,30 @@ synthetic distribution that this classifier latched onto, independent
 of its raw accuracy figure (which is also not available locally --
 never run/logged outside the GPU environment).
 
-RESOLVED: train a genuine TRTR classifier on real data and save it
-(small `step05_baseline_eval.py` change: pass `save_path` for the TRTR
-branch too, mirroring how the TSTR branch already does it), and use
-that frozen checkpoint for `DiagnosticUtilityReward` instead of
-`tstr_classifier.pt`.
+RESOLVED (code change made, commit pending push): `step05_baseline_
+eval.py`'s `_metric_tstr_trtr` now saves the TRTR branch to
+`outputs/models/trtr_classifier.pt` (mirroring the existing TSTR
+save_path pattern) and writes `outputs/models/trtr_classifier_eval.json`
+with its accuracy/macro-F1. `_train_eval_cnn` now also computes/returns
+`accuracy` (previously only `macro_f1`/`per_class_f1`), needed to hold
+this classifier to the same bar as the Mentor Classifier's reported
+83.31%/0.9495. `step06_reward_function.py`'s `DiagnosticUtilityReward`
+now loads `trtr_classifier.pt` instead of `tstr_classifier.pt`
+(`DiagnosticUtilityReward` already falls back to neutral 0.5 if the
+file doesn't exist yet, so this degrades safely until the checkpoint is
+actually trained).
+
+**NOT YET DONE -- cannot be done from this machine (no GPU, no PTB-XL
+data, no ML deps installed locally):** actually running step05 to
+produce `trtr_classifier.pt` and its real accuracy/macro-F1 number.
+The number below is a placeholder until that GPU run happens:
+
+    TRTR classifier accuracy:  NOT YET MEASURED
+    TRTR classifier macro-F1:  NOT YET MEASURED
+
+Do not treat the Diagnostic weight (0.35) as evidence-backed until
+these are filled in from `outputs/models/trtr_classifier_eval.json`
+after a real run of `step05_baseline_eval.py` on the GPU server.
 
 The alternative (use the Mentor Classifier directly) is confirmed NOT
 viable -- verified directly from source, not assumed:

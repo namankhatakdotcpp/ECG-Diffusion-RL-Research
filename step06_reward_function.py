@@ -545,7 +545,11 @@ def get_reward(
         n_samples=int(rc.pca_n_train_samples),
         fs=fs,
     )
-    classifier_path = str(Path(cfg.paths.outputs.models) / "tstr_classifier.pt")
+    # trtr_classifier.pt (real-data-trained), NOT tstr_classifier.pt -- the
+    # latter is trained entirely on synthetic samples from the baseline
+    # diffusion model, which is a reward-hacking risk when used to fine-tune
+    # that same model. See Roadmap/Stage_4_Optimization/Decisions.md.
+    classifier_path = str(Path(cfg.paths.outputs.models) / "trtr_classifier.pt")
     diag = DiagnosticUtilityReward(classifier_path, n_classes=len(class_names), device=device)
 
     weights = ABLATION_CONFIGS[config_name].copy()

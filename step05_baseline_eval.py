@@ -45,7 +45,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from scipy import linalg as sp_linalg
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, accuracy_score
 from torch.utils.data import DataLoader, Dataset, TensorDataset, WeightedRandomSampler
 from collections import Counter
 
@@ -715,16 +715,17 @@ def _train_eval_cnn(
             all_pred.extend(preds.tolist())
 
     preds_arr = np.array(all_pred)
+    accuracy  = float(accuracy_score(y_test, preds_arr))
     macro_f1  = float(f1_score(y_test, preds_arr, average="macro", zero_division=0))
     per_class_f1 = f1_score(y_test, preds_arr, average=None, zero_division=0)
     if log:
-        log.info(f"  {label}: macro_F1={macro_f1:.4f}")
+        log.info(f"  {label}: accuracy={accuracy:.4f}  macro_F1={macro_f1:.4f}")
 
     if save_path is not None:
         save_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save({"state_dict": model_cnn.state_dict(), "n_classes": n_classes}, str(save_path))
 
-    return {"macro_f1": macro_f1, "per_class_f1": per_class_f1.tolist()}
+    return {"accuracy": accuracy, "macro_f1": macro_f1, "per_class_f1": per_class_f1.tolist()}
 
 
 def _metric_tstr_trtr(
@@ -766,12 +767,38 @@ def _metric_tstr_trtr(
     )
 
     # ── TRTR — real training data (cached across seeds since data is identical) ─
+    # Saved to disk (mirrors tstr_save above) so DiagnosticUtilityReward can use
+    # a real-data-trained classifier instead of tstr_classifier.pt, which is
+    # trained entirely on synthetic samples from the baseline diffusion model --
+    # a reward-hacking risk when used to fine-tune that same model (see
+    # Roadmap/Stage_4_Optimization/Decisions.md).
+    trtr_save = Path(cfg.paths.outputs.models) / "trtr_classifier.pt"
     if trtr_cache is not None and "macro_f1" in trtr_cache:
         trtr = trtr_cache
     else:
-        trtr = _train_eval_cnn(X_train, y_train, X_test, y_test, n_classes, cfg, device, "TRTR", log)
+        trtr = _train_eval_cnn(
+            X_train, y_train, X_test, y_test, n_classes, cfg, device, "TRTR", log,
+            save_path=trtr_save if not trtr_save.exists() else None,
+        )
         if trtr_cache is not None:
             trtr_cache.update(trtr)
+
+    # Explicit, separate artifact -- not just a log line -- so this number is
+    # easy to pull into Decisions.md before the Diagnostic reward weight is
+    # treated as final, same evidentiary bar as the Mentor Classifier's own
+    # reported accuracy/macro-F1.
+    trtr_eval_path = Path(cfg.paths.outputs.models) / "trtr_classifier_eval.json"
+    if not trtr_eval_path.exists():
+        import json as _json
+        trtr_eval_path.write_text(_json.dumps(
+            {"accuracy": trtr.get("accuracy"), "macro_f1": trtr.get("macro_f1")}, indent=2
+        ))
+        if log:
+            log.info(
+                f"  TRTR classifier (real-data, for RL reward use): "
+                f"accuracy={trtr.get('accuracy')}  macro_f1={trtr.get('macro_f1')} "
+                f"-- saved {trtr_save.name}, eval written to {trtr_eval_path.name}"
+            )
 
     return tstr, trtr
 
