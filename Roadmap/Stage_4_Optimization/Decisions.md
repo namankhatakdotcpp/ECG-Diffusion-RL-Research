@@ -55,3 +55,24 @@ split across 5 (or 6, if `reward_regularization` is also added
 separately) terms -- the previously-proposed 0.55/0.25/0.10/0.10 split
 was designed for 4 terms and does not carry over automatically. Requires
 sign-off before Phase 2 implementation.
+
+### Provisional default weight split (unblocks Phase 2/3, NOT final)
+
+Six independently-weighted, independently-logged terms -- `reward_a3` is
+kept fully separate from `MorphologyReward`, not merged into it, per the
+distinction established above (interval timing vs. waveform energy; a
+merged bucket would silently drop one of the two signals):
+
+| Component      | Weight | Rationale |
+|---|---|---|
+| Diagnostic      | 0.35   | Classifier-adjacent signal, dominant per original design intent |
+| A3 (new)        | 0.20   | Directly motivated by Stage 3's dominant-divergence finding |
+| Morphology      | 0.15   | Existing interval-timing check, independent of A3 |
+| Realism         | 0.15   | Existing whole-signal manifold check |
+| HRV             | 0.10   | Existing plausibility check |
+| Regularization (new) | 0.05 | Amplitude/clipping guard |
+
+Explicitly provisional -- a default to unblock implementation and
+Phase 3 verification, not the number that ships in a paper. Config-driven
+(`cfg.reward`), so changing it later is a YAML edit, not a rewrite. Final
+weights are Dr. Balaji's call.
