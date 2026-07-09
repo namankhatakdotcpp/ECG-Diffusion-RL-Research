@@ -784,3 +784,97 @@ validation run") rather than overclaiming resolution the way the raw
 **Not yet resolved**: needs the actual `logs/rl_training_log.csv` from
 the GPU smoke-test run to get the real answer (class-rotation artifact
 vs. genuine decline vs. inconclusive-at-n=10). That's the next GPU step.
+
+## GATE 2 follow-up: PPO hyperparameter investigation (read-only, no changes made)
+
+Class-adjusted delta on the real smoke-test log came back -0.0233 (raw
+-0.0158) — class rotation does NOT explain the decline, it's slightly
+worse after adjusting. Investigated PPO hyperparameters as a second
+possible explanation, since `algorithm: ppo` (config.yaml) means
+`DDPOTrainer` is what actually ran, not `GRPOTrainer`.
+
+**1. Learning rate**: `rl_lr: 3.0e-6`, constant. No schedule anywhere in
+code except the reactive KL-divergence safety alarm
+(`if kl > KL_THRESH: current_lr *= 0.5`, `step07_rl_finetuning.py`) —
+that's a defensive halving, not a training schedule, and per the reported
+KL trace (peaked ~0.077, well under `KL_THRESH=1.0`) it never triggered
+during the smoke test. No comment or Decisions.md entry anywhere
+justifies this specific value — it is an unexamined default, not a
+deliberately-tuned conservative choice.
+
+**2. KL coefficient**: `kl_beta: 0.1`, FIXED — `self.kl_beta * kl` added
+to the loss every update, no adaptive targeting mechanism exists anywhere
+in `DDPOTrainer`/`GRPOTrainer` (grepped, confirmed absent). Same as LR: no
+record anywhere of why 0.1 specifically was chosen. Cannot confirm
+whether it's too high without an ablation — flagging the absence of
+adaptive KL targeting (common in DDPO/DPOK-style implementations) as a
+design gap, not a proven cause of the decline.
+
+**3. Advantage normalization — the most concrete finding.**
+`DDPOTrainer` does NOT normalize advantages by std at all (unlike
+`GRPOTrainer`, which does `(rewards - rewards.mean()) / (rewards.std() +
+1e-8)` per group — irrelevant here since GRPO didn't run). Instead,
+advantage = `r - self.baseline`, where `self.baseline` is a SINGLE EMA
+scalar (`baseline_decay: 0.99`), GLOBAL across all classes (not
+per-class), initialized to `0.0` with no bias correction (unlike e.g.
+Adam's `m_hat = m / (1 - β^t)`).
+
+Verified numerically (not asserted) that this produces a real cold-start
+bias: with `decay=0.99`, the weight still resting on the `0.0` initial
+value after `k` updates is `0.99^k`. `DDPOTrainer.ppo_update` does
+`n_epochs x n_rollouts = 4 x 4 = 16` baseline updates per outer PPO
+iteration, so:
+
+    after iteration  1 (k=16):  weight on 0.0 init = 0.85  (85% biased low)
+    after iteration  5 (k=80):  weight on 0.0 init = 0.45
+    after iteration 10 (k=160): weight on 0.0 init = 0.20  (still 20% biased low, at the END of the smoke test)
+
+Also checked whether the update-then-subtract ordering in the code
+(`self.baseline` is updated to include `r` BEFORE `advantage = r -
+self.baseline` is computed) introduces its own bug — algebraically,
+`advantage = decay * (r - baseline_before_this_sample)`, i.e. only a ~1%
+attenuation at `decay=0.99`, confirmed by direct numeric substitution
+(`k=1, r=0.4, b=0.0` -> `advantage=0.3960 = 0.99 * 0.4`, matches exactly).
+**Not a bug** — ruled out by computing it, not assumed.
+
+The cold-start bias IS real and quantified: since true rewards (~0.3-0.5)
+are well above the artificially-low early baseline, advantage is
+systematically inflated (pushing "generate more of this" harder than
+warranted) early in the run and shrinks as the baseline catches up over
+the 10 iterations — a real, well-known small-sample EMA-baseline
+instability. Being precise about what this does and doesn't explain: it's
+a mechanistic account of DECLINING ADVANTAGE MAGNITUDE / EFFECTIVE
+LEARNING SIGNAL over the run, which is a plausible contributor to noisy
+or unstable behavior in `reward_total` — but it is NOT the same claim as
+"this proves reward_total's decline is caused by this," and is not
+presented as such. It compounds with the baseline being global-not-
+per-class: as the smoke test rotates through classes with different
+typical reward levels (already established elsewhere in this file, e.g.
+HYP scoring lower than NORM/CD), the single shared EMA is chasing a
+non-stationary, class-dependent target on top of its own cold start.
+
+**4. Policy loss sign — re-verified, correct.** `loss_ppo =
+-torch.min(ppo_1, ppo_2)` where `ppo_1 = ratio * advantage`, `ppo_2 =
+clip(ratio) * advantage` — this is `-min(...)`, the standard PPO clipped
+surrogate objective negated for gradient-descent minimization (the
+objective itself is meant to be MAXIMIZED). `ratio = exp(lp_new -
+lp_old)`, standard new-over-old importance-sampling direction. Sign
+convention is correct.
+
+**5. Reward scale/normalization before advantage**: none beyond the
+baseline itself (point 3) — `reward_total` is used raw (already bounded
+[0,1] by `ClinicalReward.compute`'s clip), no separate whitening layer
+with its own running statistics exists to be unstable.
+
+**Proposed fix, NOT implemented — waiting for confirmation per the
+investigation's own instruction**: bias-correct the EMA baseline the same
+way Adam bias-corrects its moment estimates —
+`baseline_hat = self.baseline / (1 - self.baseline_decay ** t)` where `t`
+is the cumulative update count, using `baseline_hat` (not the raw
+`self.baseline`) when computing `advantage`. This would remove the
+quantified cold-start bias above without changing the EMA's long-run
+behavior. Alternative/complementary options not yet evaluated: a
+per-class baseline (removes the class-non-stationarity compounding
+factor) or a faster initial decay that anneals toward 0.99 (a warmup
+schedule). No hyperparameter or code changed this round — read-only
+investigation only, per instruction.
