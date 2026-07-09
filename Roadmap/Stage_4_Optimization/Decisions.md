@@ -632,3 +632,48 @@ not `himtenduh`. CPU-only, no CUDA, but fine for validation-scale work
 (the runs above took low tens of seconds to a few minutes each, not
 hours) — not fine for real PPO training at scale, which still needs
 `himtenduh`.
+
+## Real-vs-real self-check added to `subband_similarity_metrics.py` (GPU-side noise floor for Gate 1)
+
+`validate_a3_reward.py`'s bootstrap result (INCONCLUSIVE, n=360/group,
+local CPU) needs an independent, larger-sample cross-check from the
+GPU-side tooling — but `mentor_eval/subband_similarity_metrics.py` had no
+real-vs-real term at all, only generated-vs-real. Added `--self-check`
+(purely additive, generated-vs-real path untouched):
+
+- `_load_real_signals_for_class` now also returns each signal's `ecg_id`
+  (previously discarded) so a disjointness check is actually possible,
+  not assumed.
+- `_self_check_one_class` reuses the SAME real pool a class already drew
+  for the generated-vs-real comparison (not a fresh/larger draw), splits
+  it into two disjoint halves via `rng.permutation`, and **raises
+  `RuntimeError` if the two halves' ecg_id sets overlap** — refuses to
+  report a fabricated noise-floor number rather than silently comparing a
+  set against part of itself.
+- Scores the two halves with the identical `mahalanobis_distance` /
+  `bhattacharyya_distance` / `matched_cosine_similarity` functions already
+  used for generated-vs-real (imported, not reimplemented) — same
+  `MIN_SAMPLES_FOR_COVARIANCE_MULTIPLIER * 12 = 60`-sample minimum per
+  half, so at `--n-per-class 1000` each half has 500, well above it.
+- Writes `subband_self_comparison.csv` + a README alongside the existing
+  output, explicitly framed as "not a generated-vs-real comparison."
+
+**Verified locally, not just written**: ran
+`python -m mentor_eval.subband_similarity_metrics --ckpt outputs/models/
+diffusion_best.pt --n-per-class 80 --self-check` on this machine (real
+data + real `diffusion_best.pt`, confirmed available per the correction
+entry above). Confirmed: no exceptions, no overlapping-ID `RuntimeError`,
+and the `<60`-per-half guard correctly fired and skipped Mahalanobis/
+Bhattacharyya (40+40 halves at n_per_class=80) rather than computing on
+too few samples — the same safety behavior the generated-vs-real path
+already had, now proven to also hold for the self-check path. Did not run
+at the full `--n-per-class 1000` locally (real-vs-real is not the
+bottleneck; generation is, and running the full cross-check at that scale
+on CPU would take roughly an hour+ per class for no benefit — that's
+what the GPU run is for).
+
+**Not yet done**: the actual GPU run at `--n-per-class 1000` to get the
+real real-vs-real A3 Mahalanobis number to compare against the recorded
+generated-vs-real numbers (Normal 4.5694, STEMI 5.7250, NSTEMI 5.7856).
+That comparison is what actually resolves whether Gate 1's INCONCLUSIVE
+holds up at 3x the local sample size with a second, independent tool.

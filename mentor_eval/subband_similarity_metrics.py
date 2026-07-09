@@ -54,9 +54,13 @@ from mentor_eval.subband_features import (
 BOX_CLASSES = ["Normal", "STEMI", "NSTEMI"]  # AFIB excluded - no trained model class
 
 
-def _load_real_signals_for_class(candidates, ptbxl_dir: Path, n: int, rng: np.random.Generator) -> np.ndarray:
+def _load_real_signals_for_class(
+    candidates, ptbxl_dir: Path, n: int, rng: np.random.Generator,
+) -> tuple[np.ndarray, list]:
+    """Returns (signals, ecg_ids) — ecg_ids retained so a disjointness check
+    is possible when the same pool is later split (see --self-check)."""
     order = rng.permutation(len(candidates))
-    sigs = []
+    sigs, ids = [], []
     for idx in order:
         if len(sigs) >= n:
             break
@@ -67,7 +71,8 @@ def _load_real_signals_for_class(candidates, ptbxl_dir: Path, n: int, rng: np.ra
             continue
         if sig.shape == (1000, 12) and np.isfinite(sig).all():
             sigs.append(sig)
-    return np.array(sigs)
+            ids.append(rec.name)   # ecg_id (candidates is indexed by ecg_id)
+    return np.array(sigs), ids
 
 
 def _subband_only_features(full_feats: np.ndarray, band_idx: int, n_leads: int = 12) -> np.ndarray:
@@ -75,7 +80,67 @@ def _subband_only_features(full_feats: np.ndarray, band_idx: int, n_leads: int =
     return full_feats[:, band_idx * n_leads:(band_idx + 1) * n_leads]
 
 
-def run(ckpt_path: Path, out_dir: Path, cfg, n_per_class: int, seed: int, log) -> pd.DataFrame:
+def _self_check_one_class(
+    cls: str, real_signals: np.ndarray, real_ids: list, rng: np.random.Generator, log,
+) -> list[dict]:
+    """
+    Split the SAME real pool already drawn for the generated-vs-real
+    comparison into two disjoint halves and compute the identical
+    Mahalanobis/Bhattacharyya/cosine metrics between them — the real-vs-real
+    noise floor, using the same functions and same code path as the
+    generated-vs-real comparison (mahalanobis_distance/bhattacharyya_
+    distance/matched_cosine_similarity, imported not reimplemented).
+
+    Purely additive: does not touch or alter the generated-vs-real rows
+    computed in run(); reuses the same real_signals array already loaded.
+    """
+    rows: list[dict] = []
+    n = len(real_signals)
+    order = rng.permutation(n)
+    half = n // 2
+    idx_a, idx_b = order[:half], order[half:2 * half]
+
+    ids_a = {real_ids[i] for i in idx_a}
+    ids_b = {real_ids[i] for i in idx_b}
+    overlap = ids_a & ids_b
+    if overlap:
+        raise RuntimeError(
+            f"_self_check_one_class({cls!r}): {len(overlap)} record ID(s) appear in "
+            "BOTH halves — the split is not disjoint, self-check would be comparing "
+            "a set against (partially) itself. Refusing to report a fabricated "
+            "noise-floor number. This indicates a bug in the split logic above."
+        )
+
+    real_a, real_b = real_signals[idx_a], real_signals[idx_b]
+    feats_a_full = extract_subband_energy_batch(real_a)
+    feats_b_full = extract_subband_energy_batch(real_b)
+
+    min_required = MIN_SAMPLES_FOR_COVARIANCE_MULTIPLIER * 12
+    for band_idx, band in enumerate(SUBBAND_NAMES):
+        feats_a = _subband_only_features(feats_a_full, band_idx)
+        feats_b = _subband_only_features(feats_b_full, band_idx)
+
+        if len(feats_a) < min_required or len(feats_b) < min_required:
+            rows.append({
+                "class": cls, "subband": band, "n_half_a": len(feats_a), "n_half_b": len(feats_b),
+                "mahalanobis": None, "bhattacharyya": None, "cosine_similarity": None,
+                "flag": f"Only {min(len(feats_a), len(feats_b))} samples in one half "
+                        f"(<{min_required} required) — Mahalanobis/Bhattacharyya skipped.",
+            })
+            continue
+
+        rows.append({
+            "class": cls, "subband": band, "n_half_a": len(feats_a), "n_half_b": len(feats_b),
+            "mahalanobis": round(mahalanobis_distance(feats_b, feats_a), 4),
+            "bhattacharyya": round(bhattacharyya_distance(feats_a, feats_b), 4),
+            "cosine_similarity": round(matched_cosine_similarity(real_a, real_b), 4),
+            "flag": "",
+        })
+    log.info(f"{cls}: self-check (real-vs-real, disjoint halves n={half}+{n - half}) computed for all {len(SUBBAND_NAMES)} subbands")
+    return rows
+
+
+def run(ckpt_path: Path, out_dir: Path, cfg, n_per_class: int, seed: int, log, self_check: bool = False) -> pd.DataFrame:
     loaded = load_checkpoint(ckpt_path, cfg)
     if loaded is None:
         print(
@@ -99,10 +164,18 @@ def run(ckpt_path: Path, out_dir: Path, cfg, n_per_class: int, seed: int, log) -
         prep_stats = json.load(open(stats_path))
 
     rows = []
+    self_check_rows = []
     for cls in BOX_CLASSES:
         candidates = filtered[filtered["mentor_class"] == cls]
-        real_signals = _load_real_signals_for_class(candidates, ptbxl_dir, n_per_class, rng)
+        real_signals, real_ids = _load_real_signals_for_class(candidates, ptbxl_dir, n_per_class, rng)
         trained_cls = MENTOR_TO_TRAINED_CLASS.get(cls)
+
+        if self_check and len(real_signals) > 0:
+            # Same real pool this class already drew for the generated-vs-real
+            # comparison below, split into two disjoint halves — the honest
+            # real-vs-real noise floor at this sample size, not a fresh/larger
+            # draw. See _self_check_one_class docstring.
+            self_check_rows.extend(_self_check_one_class(cls, real_signals, real_ids, rng, log))
 
         if len(real_signals) == 0 or trained_cls is None:
             for band in SUBBAND_NAMES:
@@ -183,6 +256,52 @@ Subbands (see `mentor_eval/subband_features.py` for the full derivation):
     (out_dir / "subband_similarity_README.md").write_text(readme)
 
     print(out_df.to_string(index=False))
+
+    if self_check:
+        self_df = pd.DataFrame(self_check_rows)
+        self_df.to_csv(out_dir / "subband_self_comparison.csv", index=False)
+
+        self_valid = self_df.dropna(subset=["mahalanobis"])
+        self_callout = "Not enough valid (class, subband) pairs for a real-vs-real callout."
+        if not self_valid.empty:
+            worst_self = self_valid.loc[self_valid["mahalanobis"].idxmax()]
+            self_callout = (
+                f"Largest REAL-vs-REAL divergence (noise floor): subband {worst_self['subband']} "
+                f"({SUBBAND_CLINICAL_LABEL[worst_self['subband']]}) for class {worst_self['class']} "
+                f"(Mahalanobis={worst_self['mahalanobis']:.4f})."
+            )
+        log.info(self_callout)
+        print("\n" + "=" * 70)
+        print("REAL-vs-REAL SELF-CHECK (noise floor — same real pool, disjoint halves)")
+        print("=" * 70)
+        print(self_callout)
+        print(
+            "\nThis is NOT a generated-vs-real comparison — it's the same real "
+            "class distribution split in half and compared against itself, using "
+            "the identical Mahalanobis/Bhattacharyya/cosine functions above. "
+            "Compare these numbers directly against the matching (class, subband) "
+            "rows in subband_similarity_metrics.csv: if generated-vs-real is not "
+            "clearly larger than this real-vs-real noise floor, that divergence "
+            "is not distinguishable from sampling noise at this sample size."
+        )
+        print(self_df.to_string(index=False))
+        (out_dir / "subband_self_comparison_README.md").write_text(
+            "# Real-vs-real self-check (noise floor)\n\n"
+            "Same real class pool already drawn for the generated-vs-real "
+            "comparison, split into two disjoint halves (record IDs verified "
+            "non-overlapping — see subband_similarity_metrics.py's "
+            "_self_check_one_class), scored with the SAME "
+            "Mahalanobis/Bhattacharyya/cosine functions used for "
+            "generated-vs-real in subband_similarity_metrics.csv.\n\n"
+            "Purpose: a generated-vs-real divergence number means nothing on its "
+            "own — it needs a noise floor to compare against. If "
+            "generated-vs-real Mahalanobis for a (class, subband) pair is not "
+            "meaningfully larger than the real-vs-real number here for the same "
+            "pair, that divergence may just be sampling noise, not a real gap "
+            "between the model and real ECGs.\n\n"
+            f"{self_callout}\n"
+        )
+
     return out_df
 
 
@@ -192,6 +311,13 @@ def main() -> None:
     parser.add_argument("--out-dir", type=str, default=None)
     parser.add_argument("--n-per-class", type=int, default=200)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--self-check", action="store_true",
+        help="Also compute a real-vs-real noise floor: split the same real "
+             "pool into two disjoint halves and score them against each "
+             "other with the same Mahalanobis/Bhattacharyya/cosine metrics. "
+             "Writes subband_self_comparison.csv alongside the normal output.",
+    )
     args = parser.parse_args()
 
     cfg = load_config()
@@ -201,7 +327,7 @@ def main() -> None:
     ckpt_path = Path(args.ckpt) if args.ckpt else Path(cfg.paths.outputs.models) / "diffusion_best.pt"
     out_dir = Path(args.out_dir) if args.out_dir else subband_output_dir(cfg)
     snapshot_before_write(out_dir)
-    run(ckpt_path, out_dir, cfg, args.n_per_class, args.seed, log)
+    run(ckpt_path, out_dir, cfg, args.n_per_class, args.seed, log, self_check=args.self_check)
     print(f"✓ Subband similarity metrics written to {out_dir}")
 
 
