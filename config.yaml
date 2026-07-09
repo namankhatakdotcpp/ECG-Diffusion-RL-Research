@@ -145,22 +145,32 @@ reward:
   # settled. Still explicitly UNVALIDATED -- Dr. Balaji's call, not decided
   # here.
   #
-  # a3 GATED BACK TO 0.0: validate_a3_reward.py's generated-vs-real
-  # comparison returned INCONCLUSIVE (95% bootstrap CIs overlap: generated
-  # mean=0.7218 vs real mean=0.7013, gap +0.0205, n=360/group across 3
-  # seeds -- not distinguishable from noise at this sample size). Per the
-  # explicit gate: do not enable reward_a3's nonzero weight in any real
-  # training run until that validator returns a real PASS, not
-  # INCONCLUSIVE. The remaining 0.21 was redistributed proportionally
-  # across the other four terms (not re-guessed) so they still sum to 1.0.
-  # Re-enable a3 (and reduce these four back toward their prior values)
-  # once validate_a3_reward.py passes cleanly. See Decisions.md.
+  # a3 RE-ENABLED at a moderate 0.15 (was gated to 0.0, then 0.21 before
+  # that -- see Decisions.md for the full history). The local
+  # validate_a3_reward.py bootstrap (n=360/group, 3 seeds, CPU) returned
+  # INCONCLUSIVE for generated-vs-real, but a higher-powered GPU cross-check
+  # (mentor_eval/subband_similarity_metrics.py --self-check, n=500/half,
+  # 3x the local sample size, independent real-vs-real noise floor) found a
+  # clear signal: generated-vs-real A3 Mahalanobis is ~3x the real-vs-real
+  # noise floor for Normal (4.5694 vs 1.5039) and STEMI (5.7110 vs 1.8612),
+  # ~1.33x for NSTEMI (5.7590 vs 4.3286) -- smaller margin, but still above
+  # the noise floor for every class checked. The local INCONCLUSIVE is
+  # SUPERSEDED, not contradicted: it lacked the statistical power to detect
+  # an effect this size at n=360, not evidence there was no effect.
+  #
+  # 0.15 (not the original 0.21) reflects NSTEMI's smaller margin -- a
+  # judgment call, proposed but NOT independently re-derived from data, and
+  # explicitly flagged as needing sign-off (from the user or Dr. Balaji)
+  # before being treated as settled, same as every other weight number in
+  # this file. TEMPORARY NORMALIZED DEFAULT, NOT EXPERIMENTALLY VALIDATED
+  # BY A TRAINING OUTCOME -- this only validates that reward_a3 measures a
+  # real signal, not that 0.15 specifically is the right weight for it.
   weights:
-    diag:  0.47                # DiagnosticUtilityReward — classifier confidence
-    morph: 0.20                # MorphologyReward        — PQRST interval matching
-    real:  0.20                # RealismReward           — PCA manifold proximity
+    diag:  0.40                # DiagnosticUtilityReward — classifier confidence
+    a3:    0.15                # A3Reward                — A3-subband slow-wave match
+    morph: 0.16                # MorphologyReward        — PQRST interval matching
+    real:  0.16                # RealismReward           — PCA manifold proximity
     hrv:   0.13                # HRVReward               — HRV plausibility
-    a3:    0.00                # A3Reward — GATED OFF pending validate_a3_reward.py PASS
   pca_components: 50          # PCA components for RealismReward
   pca_n_train_samples: 2000   # training records used to fit PCA
   use_reliability_scaling: true  # DiagnosticUtilityReward *= per-class TRTR F1

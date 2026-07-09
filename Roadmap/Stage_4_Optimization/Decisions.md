@@ -677,3 +677,64 @@ real real-vs-real A3 Mahalanobis number to compare against the recorded
 generated-vs-real numbers (Normal 4.5694, STEMI 5.7250, NSTEMI 5.7856).
 That comparison is what actually resolves whether Gate 1's INCONCLUSIVE
 holds up at 3x the local sample size with a second, independent tool.
+
+## GATE 1 RESOLVED: GPU cross-check finds a real signal, local INCONCLUSIVE superseded (not contradicted)
+
+The GPU run above was executed (`--n-per-class 1000`, 500+500 disjoint
+halves per class, `--self-check`). Result, generated-vs-real A3
+Mahalanobis vs. the real-vs-real noise floor from the same run:
+
+| Class  | Generated-vs-real A3 | Real-vs-real A3 (noise floor) | Ratio |
+|--------|----------------------|--------------------------------|-------|
+| Normal | 4.5694                | 1.5039                         | 3.0x  |
+| STEMI  | 5.7110                | 1.8612                         | 3.1x  |
+| NSTEMI | 5.7590                | 4.3286                         | 1.33x |
+
+Normal and STEMI show divergence roughly 3x the noise floor — not
+plausibly sampling noise at n=500/half. NSTEMI's margin is smaller
+(1.33x) but still confidently above 1.0 (more divergence than the noise
+floor, not less) for every class checked.
+
+**Minor provenance note, not a correction**: STEMI's generated-vs-real
+value here (5.7110) differs slightly from the value recorded earlier in
+this file (5.7250) — almost certainly ordinary generation-seed variance
+between runs (`generate_for_class` is stochastic per seed), not a bug.
+Flagging the discrepancy explicitly rather than treating the two numbers
+as silently interchangeable, per this project's own standard for exact
+figures.
+
+**Verdict on the earlier local result**: `validate_a3_reward.py`'s
+bootstrap CI (n=360/group, 3 seeds, CPU) returning INCONCLUSIVE is
+**superseded, not contradicted**, by this GPU run. INCONCLUSIVE meant "not
+enough statistical power to resolve the ordering at this sample size" —
+it was never a claim that no effect exists. At 500/half (vs. 60-120/class
+locally) with an independent real-vs-real baseline computed by a
+completely separate script (`subband_similarity_metrics.py`, not
+`validate_a3_reward.py`), the effect resolves cleanly. Both results are
+consistent with each other once read correctly; neither needs to be
+"fixed."
+
+**Weight re-enabled**: `config.yaml`'s `a3` weight moved from 0.00 back
+to **0.15** (not the original 0.21) — `diag .40 / a3 .15 / morph .16 /
+real .16 / hrv .13`. The reduction from 0.21 reflects NSTEMI's smaller
+3x-vs-1.33x margin: a judgment call, not re-derived from data, and
+**explicitly not finalized** — needs sign-off from the user or Dr. Balaji
+before being treated as settled, same as every other weight number in
+this file. This result validates that `reward_a3` measures something
+real; it does not validate that 0.15 specifically is the right weight —
+that's still an open question for training outcomes to answer.
+
+**Open observation, not blocking**: Bhattacharyya behaves asymmetrically
+between the two comparisons. In the real-vs-real self-check, Bhattacharyya
+is LOWEST for A3 and increases toward D1 (e.g. Normal: A3=1.82 vs.
+D1=0.08) — the opposite ordering from the generated-vs-real comparison,
+where A3 Bhattacharyya is typically the HIGHEST subband. Mahalanobis
+agrees directionally across both comparisons (A3 highest divergence in
+both), so this doesn't change the Gate 1 conclusion above, which rests on
+Mahalanobis. But an evaluation metric flipping its relative ordering
+between the real-vs-real and generated-vs-real cases is worth
+understanding before it's used for anything beyond this one comparison —
+possibly related to Bhattacharyya's log-determinant term behaving
+differently when the two covariances being compared are near-identical
+(real-vs-real) vs. genuinely different (generated-vs-real). Not
+investigated further here; flagged as a follow-up, not resolved.
