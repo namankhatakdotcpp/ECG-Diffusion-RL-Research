@@ -738,3 +738,49 @@ possibly related to Bhattacharyya's log-determinant term behaving
 differently when the two covariances being compared are near-identical
 (real-vs-real) vs. genuinely different (generated-vs-real). Not
 investigated further here; flagged as a follow-up, not resolved.
+
+## GATE 2 (smoke test) result: 4/5 PASS, one FAIL under diagnosis — class-rotation-confound check added
+
+`step07_rl_finetuning.py --smoke-test` ran on the GPU: `policy_params_
+changed` (checksum 954.26->951.14), `kl_nonzero_at_some_point` (peaked
+~0.077 at iteration 7, non-monotonic), `grad_norm_never_zero` (0.11-0.25
+range), and `same_seed_samples_measurably_differ` (L2=106.09,
+cosine=0.459, reward_frozen=0.518 vs reward_policy=0.285) all PASSED —
+strong, unambiguous evidence the PPO wiring is mechanically correct: the
+policy updates and generation output genuinely changes.
+
+`reward_did_not_degrade_first_vs_second_half` FAILED (0.3162 -> 0.3004).
+Per the smoke test's own warning text, this is not something to wave
+through as noise OR treat as a fatal wiring bug without checking first —
+same standard as the A3 bootstrap and the Bhattacharyya asymmetry above.
+
+**Specific, checkable confound**: class is sampled randomly each
+iteration (`rng.integers(0, n_classes)` in the training loop) and
+different classes have shown different baseline reward magnitudes
+throughout this project (e.g. HYP/OTHER scoring lower than NORM/CD in the
+A3Reward validation runs above). A raw first-half-vs-second-half split of
+`reward_total` can measure "which classes landed in which half" rather
+than whether the policy scores worse on the SAME class over time.
+
+**Diagnostic tool added**: `diagnose_smoke_test_reward_trend.py` — re-
+slices the already-collected `logs/rl_training_log.csv` (no retraining
+needed). Reports (1) the raw split, reproducing the smoke test's own
+check; (2) a class-adjusted split (subtract each iteration's class's own
+run-mean reward before splitting); (3) per-class within-class trend for
+any class occurring >=2 times. Verified locally against a synthetic CSV
+matching `rl_training_log.csv`'s exact column format (10 iterations,
+mixed classes) — script runs correctly and produces the intended
+class-adjusted comparison; NOT run against the real GPU smoke-test log
+yet, since that file only exists on the GPU machine.
+
+**Explicit caveat carried into the tool itself, not just this entry**: at
+n=10 iterations across up to 6 classes, most classes will have only 1-3
+occurrences — any class-adjusted result here is directional evidence, not
+a statistically powered test. If the adjusted decline turns out to
+persist, the tool's own output says so ("NOT yet proof... worth a longer
+validation run") rather than overclaiming resolution the way the raw
+0.3162->0.3004 number alone would invite.
+
+**Not yet resolved**: needs the actual `logs/rl_training_log.csv` from
+the GPU smoke-test run to get the real answer (class-rotation artifact
+vs. genuine decline vs. inconclusive-at-n=10). That's the next GPU step.
