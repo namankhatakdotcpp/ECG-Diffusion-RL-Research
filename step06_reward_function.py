@@ -4,22 +4,32 @@ step06_reward_function.py — Clinical reward function for RL fine-tuning.
 This is the intellectual core of the paper: a physiology-grounded reward that
 penalises generated ECGs lacking clinical validity, preventing reward hacking.
 
-Four components (all return float in [0, 1]):
+Five components (all return float in [0, 1]):
   MorphologyReward        — PQRST interval matching vs reference stats (neurokit2)
   HRVReward               — SDNN/RMSSD plausibility vs NORM reference
   RealismReward           — PCA-based proximity to real training manifold
   DiagnosticUtilityReward — CNN classifier confidence for target disease class
+  A3Reward                — A3-subband (slow-wave) energy match vs reference
+                             distribution; directly motivated by Stage 3's
+                             dominant finding (largest remaining real-vs-
+                             generated divergence, every architecture tested)
 
-Composite: ClinicalReward = weighted sum (weights from config.reward.weights).
+Composite: ClinicalReward = weighted sum, weights from cfg.reward.weights
+(config.yaml) when config_name="full" — NOT from ABLATION_CONFIGS in that
+case (a prior bug had get_reward() silently ignore cfg.reward.weights even
+for "full"; fixed, see Decisions.md). Named ablation variants below still
+use the fixed ABLATION_CONFIGS table regardless of cfg, by design.
 
-Ablation variants (for step09): 'full', 'diag_only', 'no_diag', 'no_morph', 'no_hrv'
+Ablation variants (for step09): 'full', 'diag_only', 'no_diag', 'no_morph',
+'no_hrv', 'no_a3', 'a3_only'
 
 Reads at startup:
   outputs/processed/morphology_stats.json
   outputs/processed/hrv_stats.json
+  outputs/processed/a3_subband_stats.json
   outputs/processed/class_names.json
   outputs/processed/X_train.npy          (for PCA fitting)
-  outputs/models/tstr_classifier.pt      (DiagnosticUtilityReward, optional)
+  outputs/models/trtr_classifier.pt      (DiagnosticUtilityReward, optional)
 
 Self-test writes:
   outputs/results/fig04_reward_components.pdf
@@ -67,12 +77,20 @@ PUBSTYLE = {
 # ──────────────────────────────────────────────────────────────────────────────
 
 ABLATION_CONFIGS: dict[str, dict[str, float]] = {
-    "full":      {"morph": 0.3, "hrv": 0.3, "real": 0.2, "diag": 0.2},
-    "diag_only": {"morph": 0.0, "hrv": 0.0, "real": 0.0, "diag": 1.0},
-    "no_diag":   {"morph": 0.4, "hrv": 0.4, "real": 0.2, "diag": 0.0},
-    "no_morph":  {"morph": 0.0, "hrv": 0.4, "real": 0.3, "diag": 0.3},
-    "no_hrv":    {"morph": 0.4, "hrv": 0.0, "real": 0.3, "diag": 0.3},
+    "full":      {"morph": 0.3, "hrv": 0.3, "real": 0.2, "diag": 0.2, "a3": 0.0},
+    "diag_only": {"morph": 0.0, "hrv": 0.0, "real": 0.0, "diag": 1.0, "a3": 0.0},
+    "no_diag":   {"morph": 0.4, "hrv": 0.4, "real": 0.2, "diag": 0.0, "a3": 0.0},
+    "no_morph":  {"morph": 0.0, "hrv": 0.4, "real": 0.3, "diag": 0.3, "a3": 0.0},
+    "no_hrv":    {"morph": 0.4, "hrv": 0.0, "real": 0.3, "diag": 0.3, "a3": 0.0},
+    "no_a3":     {"morph": 0.3, "hrv": 0.3, "real": 0.2, "diag": 0.2, "a3": 0.0},
+    "a3_only":   {"morph": 0.0, "hrv": 0.0, "real": 0.0, "diag": 0.0, "a3": 1.0},
 }
+# NOTE: "full"/"no_a3" here keep a3=0.0 for backward compatibility with the
+# step09 ablation harness's existing 4-term configs. The actual training
+# weight for a3 (nonzero, per the Stage 4 decision that A3 must be in the
+# reward from the first RL experiment) is set in config.yaml's
+# reward.weights and used by get_reward() when config_name="full" is
+# called WITHOUT overriding weights from cfg — see get_reward() below.
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Shared scoring helpers
@@ -322,7 +340,16 @@ class DiagnosticUtilityReward:
     """
     Rewards ECGs that would be useful for training a downstream disease classifier.
     Returns the softmax probability assigned to the target class by a CNN trained
-    on real ECGs (loaded from outputs/models/tstr_classifier.pt).
+    on real ECGs (loaded from outputs/models/trtr_classifier.pt), scaled by that
+    class's held-out reliability (per-class F1, from trtr_classifier_eval.json).
+
+    Reliability scaling: reward = confidence(target_class) * reliability[target_class]
+    Classes the TRTR classifier is unreliable on (e.g. HYP, macro-F1 ~0.39 vs
+    NORM's ~0.82) get discounted rather than trusted at face value — a policy
+    shouldn't be able to farm free reward from a class the classifier itself is
+    weak at distinguishing. Falls back to reliability=1.0 (no scaling) if
+    trtr_classifier_eval.json isn't present, since the weight-vs-uniform
+    question is unvalidated until real per-class F1 numbers exist.
 
     WARNING: This component alone causes reward hacking if used without the others.
     The diffusion model quickly learns to produce ECGs that fool the CNN while
@@ -338,14 +365,18 @@ class DiagnosticUtilityReward:
         classifier_path: str,
         n_classes:       int,
         device:          str = "cpu",
+        eval_path:       Optional[str] = None,
+        use_reliability: bool = True,
     ):
         from step05_baseline_eval import Simple1DCNN
 
-        self.device    = device
-        self.n_classes = n_classes
-        self.available = False
-        self._log      = logging.getLogger(__name__)
+        self.device      = device
+        self.n_classes   = n_classes
+        self.available   = False
+        self._log        = logging.getLogger(__name__)
         self.model: Optional[nn.Module] = None
+        self.use_reliability = use_reliability
+        self.reliability  = np.ones(n_classes, dtype=float)
 
         path = Path(classifier_path)
         if path.exists():
@@ -369,6 +400,38 @@ class DiagnosticUtilityReward:
                 "Run step05 first. Returning 0.5 (neutral)."
             )
 
+        if not use_reliability:
+            self._log.info(
+                "DiagnosticUtilityReward: use_reliability_scaling=False — "
+                "reliability fixed at 1.0 (ablation mode)."
+            )
+            return
+
+        eval_p = Path(eval_path) if eval_path else path.parent / "trtr_classifier_eval.json"
+        if eval_p.exists():
+            try:
+                per_class_f1 = json.load(open(eval_p)).get("per_class_f1")
+                if per_class_f1 and len(per_class_f1) == n_classes:
+                    self.reliability = np.asarray(per_class_f1, dtype=float)
+                    self._log.info(
+                        f"DiagnosticUtilityReward: loaded per-class reliability from {eval_p}"
+                    )
+                else:
+                    self._log.warning(
+                        f"DiagnosticUtilityReward: {eval_p} missing/mismatched per_class_f1 "
+                        f"(expected {n_classes} entries). Using uniform reliability=1.0."
+                    )
+            except Exception as exc:
+                self._log.warning(
+                    f"DiagnosticUtilityReward: failed to load {eval_p} ({exc}). "
+                    "Using uniform reliability=1.0."
+                )
+        else:
+            self._log.warning(
+                f"DiagnosticUtilityReward: {eval_p} not found. "
+                "Using uniform reliability=1.0 until a real TRTR eval is produced."
+            )
+
     def compute(self, ecg: np.ndarray, target_class_idx: int) -> float:
         """
         Args:
@@ -385,8 +448,166 @@ class DiagnosticUtilityReward:
         with torch.no_grad():
             logits = self.model(x)                      # (1, n_classes)
             prob   = F.softmax(logits, dim=-1)          # (1, n_classes)
-        idx = min(target_class_idx, prob.shape[-1] - 1)
-        return float(prob[0, idx].item())
+        idx        = min(target_class_idx, prob.shape[-1] - 1)
+        confidence = float(prob[0, idx].item())
+        reliability = float(self.reliability[idx]) if idx < len(self.reliability) else 1.0
+        return confidence * reliability
+
+
+class A3Reward:
+    """
+    Scores how close a generated ECG's A3-subband (slow-wave: P-wave,
+    T-wave, ST-segment, baseline; 0-6.25 Hz at fs=100 Hz) energy profile is
+    to the real per-class reference distribution.
+
+    Directly motivated by Stage 3's dominant finding, replicated across
+    every architecture evaluated there: A3-subband divergence is the
+    largest remaining gap between generated and real ECGs. See
+    Roadmap/Stage_3_Architecture_Improvements/Reports/
+    Stage3_Subband_Master_Comparison.md for the table this is meant to
+    close the gap against — NOTE that file currently reads "0/72 rows
+    evaluated" (subband_similarity_metrics.py has never been run to
+    completion on this project, no diffusion checkpoint was available
+    locally). There is no real generated-vs-real A3 number recorded
+    anywhere in this repo yet to numerically validate against; that has
+    to happen on the GPU (run subband_similarity_metrics.py once a
+    checkpoint exists), not be assumed. See Decisions.md.
+
+    Feature extraction reuses `mentor_eval.subband_features.
+    extract_subband_energy_features` VERBATIM — the exact function Stage 3's
+    evaluation script (mentor_eval/subband_similarity_metrics.py) already
+    uses (bior4.4 wavelet, J=3, mean-squared-coefficient energy per lead).
+    Imported, not reimplemented, so evaluation and this reward cannot
+    silently drift apart on what "A3 energy" means.
+
+    Scoring reuses the exact mean/covariance/regularisation formula from
+    `mentor_eval.similarity_metrics.mahalanobis_distance` (ridge-regularised
+    inverse covariance, d² = diff @ inv_cov @ diff), factored so the
+    per-class (mean, inv_cov) is computed ONCE at init from
+    outputs/processed/a3_subband_stats.json rather than recomputed from raw
+    real samples on every reward call — mahalanobis_distance as written
+    recomputes the full covariance every invocation, appropriate for a
+    one-shot offline evaluation report but far too expensive inside a PPO
+    rollout loop called thousands of times. This is a documented, necessary
+    divergence from the evaluation-side call pattern, not an independent
+    reimplementation: the feature extraction and distance formula are
+    identical, only the caching differs. What could cause the two to
+    disagree: if a3_subband_stats.json's reference (built from X_train in
+    step03) and subband_similarity_metrics.py's real-sample comparison set
+    (drawn fresh from PTB-XL at eval time, different sample/seed) diverge —
+    e.g. different real records sampled — the two distance numbers won't be
+    bit-identical even on the same generated ECG. They should be close, not
+    exact; see the validation script for how "close" is checked.
+
+    score = exp(-mahalanobis_distance / scale), the same Gaussian-decay
+    mapping RealismReward already uses for its own PCA-space distance, for
+    consistency within this reward function.
+    """
+
+    def __init__(self, a3_stats_file: dict, scale: float = 8.0):
+        """
+        Args:
+            a3_stats_file: the full JSON loaded from a3_subband_stats.json,
+                {"_metadata": {...}, "classes": {cls: {mean, cov, n}}}.
+                Older files without "_metadata" (flat {cls: {...}}) are
+                accepted for backward compatibility but log a warning,
+                since they predate the drift-detection sanity check below.
+        """
+        from mentor_eval.subband_features import (
+            extract_subband_energy_features, SUBBAND_NAMES, WAVELET, LEVELS,
+        )
+        self._extract  = extract_subband_energy_features
+        self._a3_idx   = SUBBAND_NAMES.index("A3")
+        self._n_leads  = 12
+        self._scale    = scale
+        self._log      = logging.getLogger(__name__)
+
+        metadata = a3_stats_file.get("_metadata")
+        a3_stats = a3_stats_file.get("classes", a3_stats_file)  # flat-dict fallback
+
+        if metadata is None:
+            if a3_stats_file:  # non-empty but no metadata -> genuinely old-format file
+                self._log.warning(
+                    "A3Reward: a3_subband_stats.json has no '_metadata' block "
+                    "(old-format file, predates drift-detection). Cannot verify "
+                    "wavelet/decomposition-level match — re-run step03 Stage 7 "
+                    "to regenerate with metadata."
+                )
+        else:
+            # Sanity-check against THIS code's actual extraction parameters,
+            # not just against what step03 wrote — catches the file being
+            # regenerated later with different wavelet/level choices without
+            # this reward code being updated to match.
+            mismatches = []
+            if metadata.get("wavelet") != WAVELET:
+                mismatches.append(f"wavelet: file={metadata.get('wavelet')!r} vs code={WAVELET!r}")
+            if metadata.get("decomposition_level") != LEVELS:
+                mismatches.append(
+                    f"decomposition_level: file={metadata.get('decomposition_level')!r} vs code={LEVELS!r}"
+                )
+            if metadata.get("dataset", "").split(" ")[0] != "PTB-XL":
+                mismatches.append(f"dataset: file={metadata.get('dataset')!r} (expected PTB-XL)")
+            if mismatches:
+                raise RuntimeError(
+                    "A3Reward: a3_subband_stats.json metadata does not match this "
+                    "code's extraction parameters — " + "; ".join(mismatches) + ". "
+                    "The reference distribution and this reward's feature "
+                    "extraction must use identical wavelet/level or the "
+                    "Mahalanobis distance is meaningless. Regenerate the stats "
+                    "file (step03 Stage 7) or fix the mismatch before proceeding."
+                )
+
+        self.stats = a3_stats
+        self._cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+
+        for cls, s in a3_stats.items():
+            try:
+                mean = np.asarray(s["mean"], dtype=np.float64)
+                cov  = np.asarray(s["cov"], dtype=np.float64)
+                # Same ridge regularisation constant as mahalanobis_distance.
+                cov_reg = cov + np.eye(cov.shape[0]) * 1e-6
+                inv_cov = np.linalg.pinv(cov_reg)
+                self._cache[cls] = (mean, inv_cov)
+            except Exception as exc:
+                self._log.warning(f"A3Reward: failed to load stats for class {cls!r}: {exc}")
+
+        if not self._cache:
+            # Fail loudly, not a silent 0.5-neutral fallback: a3_subband_
+            # stats.json missing/empty means there is no frozen real-data
+            # reference distribution for A3Reward to score against at all.
+            # Falling back to neutral would let a run silently train with
+            # a3's weight nonzero but its score constant — indistinguishable
+            # from a real (near-)neutral A3 signal in the logs. This must
+            # be caught before RL starts, not discovered from a flat reward
+            # curve after the fact.
+            raise RuntimeError(
+                "A3Reward: no per-class stats loaded — a3_subband_stats.json "
+                "is missing, empty, or every class's stats failed to parse. "
+                "Run step03_eda_and_class_mapping.py (Stage 7) first to build "
+                "the frozen real-data A3 reference distribution. Refusing to "
+                "silently proceed with a neutral/rebuilt fallback."
+            )
+
+    def compute(self, ecg: np.ndarray, target_class: str) -> float:
+        """
+        Args:
+            ecg:          (1000, 12) z-score normalised ECG
+            target_class: class name string (e.g. 'MI', 'NORM')
+        Returns:
+            float in [0, 1]
+        """
+        if target_class not in self._cache:
+            return 0.5   # no reference — neutral, same convention as MorphologyReward/HRVReward
+
+        mean, inv_cov = self._cache[target_class]
+        full_feats = self._extract(ecg)   # (len(SUBBAND_NAMES) * 12,)
+        feat = full_feats[self._a3_idx * self._n_leads:(self._a3_idx + 1) * self._n_leads]
+
+        diff = feat - mean
+        d2   = float(diff @ inv_cov @ diff)
+        d2   = max(d2, 0.0)
+        distance = float(np.sqrt(d2))
+        return float(np.clip(np.exp(-distance / self._scale), 0.0, 1.0))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -398,6 +619,7 @@ class ClinicalReward:
     Composite clinical reward — the full reward signal used in RL fine-tuning.
 
       r(x) = w_morph·r_morph + w_hrv·r_hrv + w_real·r_real + w_diag·r_diag
+             + w_a3·r_a3
 
     All components return float in [0, 1]; total is also in [0, 1] when weights
     sum to 1.0.
@@ -405,7 +627,9 @@ class ClinicalReward:
     Use get_reward(config_name) to obtain ablation variants for step09.
 
     Performance note: neurokit2 dominates latency (~20–50 ms/ECG on CPU).
-    PCA and CNN together add < 5 ms. Target: < 100 ms/ECG.
+    PCA and CNN together add < 5 ms. A3 (pywt DWT, J=3, 12 leads) is
+    benchmarked by the smoke test (step07_rl_finetuning.py --smoke-test) —
+    do not assume it's cheap, measure it. Target: < 100 ms/ECG.
     """
 
     def __init__(
@@ -414,6 +638,7 @@ class ClinicalReward:
         hrv_reward:   HRVReward,
         real_reward:  RealismReward,
         diag_reward:  DiagnosticUtilityReward,
+        a3_reward:    A3Reward,
         weights:      dict[str, float],
         class_names:  list[str],
     ):
@@ -421,8 +646,18 @@ class ClinicalReward:
         self.hrv         = hrv_reward
         self.real        = real_reward
         self.diag        = diag_reward
+        self.a3          = a3_reward
         self.weights     = weights
         self.class_names = class_names
+
+        # Per-component wall-clock timing (ms), accumulated across compute()
+        # calls. Overhead is a handful of perf_counter() calls (~tens of ns)
+        # so this stays on unconditionally — needed to catch a component that
+        # turns out to dominate the PPO rollout loop before a real GPU run
+        # commits hours to it.
+        self._timing: dict[str, list[float]] = {
+            "morph": [], "hrv": [], "real": [], "diag": [], "a3": [], "total": [],
+        }
 
     # ── Single ECG ────────────────────────────────────────────────────────────
 
@@ -436,13 +671,29 @@ class ClinicalReward:
         Evaluate one ECG.
 
         Returns:
-            dict with keys 'total', 'r_morph', 'r_hrv', 'r_real', 'r_diag'
+            dict with keys 'total', 'r_morph', 'r_hrv', 'r_real', 'r_diag', 'r_a3'
             All values float in [0, 1].
         """
+        import time
+
+        t0 = time.perf_counter()
         r_morph = self.morph.compute(ecg, target_class)
+        t1 = time.perf_counter()
         r_hrv   = self.hrv.compute(ecg)
+        t2 = time.perf_counter()
         r_real  = self.real.compute(ecg)
+        t3 = time.perf_counter()
         r_diag  = self.diag.compute(ecg, target_class_idx)
+        t4 = time.perf_counter()
+        r_a3    = self.a3.compute(ecg, target_class)
+        t5 = time.perf_counter()
+
+        self._timing["morph"].append((t1 - t0) * 1000)
+        self._timing["hrv"].append((t2 - t1) * 1000)
+        self._timing["real"].append((t3 - t2) * 1000)
+        self._timing["diag"].append((t4 - t3) * 1000)
+        self._timing["a3"].append((t5 - t4) * 1000)
+        self._timing["total"].append((t5 - t0) * 1000)
 
         w     = self.weights
         total = (
@@ -450,6 +701,7 @@ class ClinicalReward:
             + w.get("hrv",   0.3) * r_hrv
             + w.get("real",  0.2) * r_real
             + w.get("diag",  0.2) * r_diag
+            + w.get("a3",    0.0) * r_a3
         )
 
         return {
@@ -457,8 +709,30 @@ class ClinicalReward:
             "r_morph": float(np.clip(r_morph, 0.0, 1.0)),
             "r_hrv":   float(np.clip(r_hrv,   0.0, 1.0)),
             "r_real":  float(np.clip(r_real,  0.0, 1.0)),
+            "r_a3":    float(np.clip(r_a3,    0.0, 1.0)),
             "r_diag":  float(np.clip(r_diag,  0.0, 1.0)),
         }
+
+    def get_timing_summary(self, reset: bool = False) -> dict[str, dict[str, float]]:
+        """
+        Mean/max/n wall-clock ms per component, accumulated since init (or
+        since the last reset). Use this to find out which component actually
+        dominates the reward path before assuming any one of them is cheap.
+        """
+        summary = {}
+        for k, vals in self._timing.items():
+            if vals:
+                summary[k] = {
+                    "mean_ms": float(np.mean(vals)),
+                    "max_ms":  float(np.max(vals)),
+                    "n":       len(vals),
+                }
+            else:
+                summary[k] = {"mean_ms": None, "max_ms": None, "n": 0}
+        if reset:
+            for k in self._timing:
+                self._timing[k] = []
+        return summary
 
     # ── Batch convenience ─────────────────────────────────────────────────────
 
@@ -550,10 +824,36 @@ def get_reward(
     # diffusion model, which is a reward-hacking risk when used to fine-tune
     # that same model. See Roadmap/Stage_4_Optimization/Decisions.md.
     classifier_path = str(Path(cfg.paths.outputs.models) / "trtr_classifier.pt")
-    diag = DiagnosticUtilityReward(classifier_path, n_classes=len(class_names), device=device)
+    use_reliability = bool(rc.get("use_reliability_scaling", True))
+    diag = DiagnosticUtilityReward(
+        classifier_path, n_classes=len(class_names), device=device,
+        use_reliability=use_reliability,
+    )
 
-    weights = ABLATION_CONFIGS[config_name].copy()
-    return ClinicalReward(morph, hrv, real, diag, weights, class_names)
+    # ── Weights ──────────────────────────────────────────────────────────────
+    # BUG FOUND AND FIXED HERE: this used to always take weights from the
+    # hardcoded ABLATION_CONFIGS table, even for config_name="full" — meaning
+    # cfg.reward.weights (config.yaml) was NEVER actually read. Every weight
+    # number discussed for config.yaml up to this point (0.4/0.4/0.15/0.05,
+    # the reliability-scaling defaults, etc.) was dead config, not what
+    # training actually used (ABLATION_CONFIGS["full"]'s hardcoded
+    # 0.3/0.3/0.2/0.2 was). See Decisions.md.
+    #
+    # Named ablation variants (diag_only, no_morph, ...) intentionally still
+    # use the fixed ABLATION_CONFIGS table regardless of cfg — that's the
+    # point of an ablation study: known, fixed configurations for
+    # comparison, not whatever happens to be in config.yaml. Only "full"
+    # (the actual training configuration) now defers to cfg.reward.weights.
+    if config_name == "full" and rc.get("weights") is not None:
+        weights = {k: float(v) for k, v in rc.weights.items()}
+        weights.setdefault("a3", 0.0)
+    else:
+        weights = ABLATION_CONFIGS[config_name].copy()
+
+    a3_stats = _load_json(processed_dir / "a3_subband_stats.json")
+    a3 = A3Reward(a3_stats)
+
+    return ClinicalReward(morph, hrv, real, diag, a3, weights, class_names)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -780,11 +1080,11 @@ def _make_figure4(
     log,
 ) -> None:
     """
-    Paper Figure 4: grouped bar chart of all 4 reward components.
+    Paper Figure 4: grouped bar chart of all 5 reward components.
     Two bars per group: real ECG (green) vs generated ECG (orange).
     """
-    components  = ["r_morph", "r_hrv", "r_real", "r_diag"]
-    labels      = ["Morphology", "HRV", "Realism", "Diagnostic"]
+    components  = ["r_morph", "r_hrv", "r_real", "r_diag", "r_a3"]
+    labels      = ["Morphology", "HRV", "Realism", "Diagnostic", "A3-subband"]
     colors_real = "#2ca02c"
     colors_gen  = "#ff7f0e"
 

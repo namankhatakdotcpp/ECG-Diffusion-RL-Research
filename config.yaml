@@ -129,13 +129,43 @@ classifier:
 # Clinical Reward Function (step06_reward_function.py)
 # ---------------------------------------------------------------------------
 reward:
-  weights:                    # composite reward weights (must sum to 1.0)
-    morph: 0.4                # MorphologyReward      — PQRST interval matching
-    hrv:   0.4                # HRVReward             — HRV plausibility
-    real:  0.15               # RealismReward         — PCA manifold proximity
-    diag:  0.05               # DiagnosticUtilityReward — classifier confidence
+  # composite reward weights (must sum to 1.0). NOW ACTUALLY WIRED: a prior
+  # bug had get_reward() silently ignore this block even for the "full"
+  # config and use a hardcoded 0.3/0.3/0.2/0.2 (morph/hrv/real/diag, no a3)
+  # instead — found and fixed while wiring reward_a3 in. Every weight number
+  # discussed for this file before that fix was dead config. See Decisions.md.
+  #
+  # TEMPORARY NORMALIZED DEFAULTS -- NOT EXPERIMENTALLY VALIDATED.
+  # Renormalized from an earlier unvalidated 6-term split already recorded
+  # in Roadmap/Stage_4_Optimization/Decisions.md (diag .35 / a3 .20 /
+  # morph .15 / real .15 / hrv .10 / regularization .05): the
+  # not-yet-implemented regularization term was dropped and the remaining
+  # 0.95 rescaled to sum to 1.0. This is arithmetic on a prior guess, not
+  # evidence -- do not call this "derived from Stage 3 data" or treat it as
+  # settled. Still explicitly UNVALIDATED -- Dr. Balaji's call, not decided
+  # here.
+  #
+  # a3 GATED BACK TO 0.0: validate_a3_reward.py's generated-vs-real
+  # comparison returned INCONCLUSIVE (95% bootstrap CIs overlap: generated
+  # mean=0.7218 vs real mean=0.7013, gap +0.0205, n=360/group across 3
+  # seeds -- not distinguishable from noise at this sample size). Per the
+  # explicit gate: do not enable reward_a3's nonzero weight in any real
+  # training run until that validator returns a real PASS, not
+  # INCONCLUSIVE. The remaining 0.21 was redistributed proportionally
+  # across the other four terms (not re-guessed) so they still sum to 1.0.
+  # Re-enable a3 (and reduce these four back toward their prior values)
+  # once validate_a3_reward.py passes cleanly. See Decisions.md.
+  weights:
+    diag:  0.47                # DiagnosticUtilityReward — classifier confidence
+    morph: 0.20                # MorphologyReward        — PQRST interval matching
+    real:  0.20                # RealismReward           — PCA manifold proximity
+    hrv:   0.13                # HRVReward               — HRV plausibility
+    a3:    0.00                # A3Reward — GATED OFF pending validate_a3_reward.py PASS
   pca_components: 50          # PCA components for RealismReward
   pca_n_train_samples: 2000   # training records used to fit PCA
+  use_reliability_scaling: true  # DiagnosticUtilityReward *= per-class TRTR F1
+                                  # (trtr_classifier_eval.json); ablatable — set
+                                  # false to compare with/without for the paper
 
 # ---------------------------------------------------------------------------
 # RL Fine-Tuning Hyperparameters (PPO / GRPO)
@@ -158,6 +188,42 @@ rl:
   baseline_decay: 0.99        # EMA decay for PPO advantage baseline
   save_every_iters: 10        # checkpoint every N iterations
   plot_every_iters: 5         # progress plot every N iterations
+  smoke_test_iterations: 10   # iterations for `python step07_rl_finetuning.py --smoke-test`
+  # Evaluation checkpoint schedule. Lightweight eval (frozen TRTR classifier
+  # confidence + KL-to-base) runs at every entry in eval_checkpoints so a
+  # stalled/regressing run is caught cheaply. The full Stage-3-equivalent
+  # suite (Mentor Classifier retrain — several GPU-minutes — plus
+  # disease-wise metrics) only runs at full_eval_checkpoints, a coarser
+  # subset, to avoid paying that retrain cost repeatedly.
+  eval_checkpoints:      [250, 500, 1000, 2000, 5000]
+  full_eval_checkpoints: [1000, 5000]
+  # Early stopping and checkpoint selection are BOTH gated on full_eval_checkpoints
+  # only (Mentor Classifier / heavy-eval metrics) -- never on the lightweight
+  # TRTR-based checkpoints. TRTR is the same classifier used as the training
+  # reward signal (DiagnosticUtilityReward); stopping or selecting on it would
+  # just be re-confirming the training reward converged, not that the model
+  # generalises -- the same circularity already resolved for the reward
+  # function itself (see Decisions.md). The Mentor Classifier is retrained
+  # from scratch and evaluated independently of anything used in training.
+  early_stopping:
+    enabled: false             # opt-in; full-eval checkpoints are expensive
+    metric: mentor_macro_f1    # from classifier_generated_eval.json (Mentor Classifier
+                                # scored on this checkpoint's generated ECGs) -- NOT trtr
+    mode: max
+    patience: 2                # consecutive full-eval checkpoints with no improvement
+    min_delta: 0.01
+  checkpoint_selection:
+    metric: mentor_macro_f1    # NOT trtr_macro_f1 -- see note above
+    mode: max
+  mentor_stability_check_repeats: 3  # re-run Mentor Classifier eval this many
+                                      # times (different seeds) at the FIRST
+                                      # full-eval checkpoint only, to measure
+                                      # mentor_macro_f1's own run-to-run spread
+                                      # before trusting it for early-stop/selection
+                                      # decisions. Subsequent full-eval checkpoints
+                                      # use a single run (repeating every time would
+                                      # re-stack the same retrain cost already
+                                      # flagged for the Mentor Classifier).
 
 # ---------------------------------------------------------------------------
 # Evaluation (step05_baseline_eval.py)

@@ -136,3 +136,499 @@ Diagnostic's 0.35 weight is additionally contingent on resolving the
 training-time-classifier circularity issue above -- do not raise this
 weight further until that's settled; a stronger case exists for holding
 or lowering it, not raising it, given the reward-hacking risk.
+
+## Diagnostic weight: retracted a proposed 0.35→0.30 cut, kept 0.35 as unvalidated
+
+A lower TRTR macro-F1 (0.607) vs. the Mentor Classifier's (0.9495) was
+initially read as grounds to shrink the Diagnostic weight to 0.30. That
+conflates two different things: macro-F1 measures how *noisy* the reward
+signal is, not how much *weight* it should carry in the loss -- a noisy
+but correctly-scaled term and an overweighted term are different failure
+modes, and shrinking the coefficient doesn't fix the former. Retracted.
+0.35 stays as an explicitly unvalidated starting point, not because it's
+been checked, but because changing it now would just be a second guess
+replacing the first one.
+
+Fix applied instead, more surgical than a global weight change: per-class
+reliability scaling in `DiagnosticUtilityReward` (`step06_reward_function.
+py`) -- `reward = confidence(target_class) * reliability[target_class]`,
+where `reliability` is the TRTR classifier's own per-class F1 from
+`trtr_classifier_eval.json`. This discounts exactly the classes the
+classifier is unreliable on (HYP: 0.390) without penalising the four
+classes it handles reasonably (NORM: 0.824, MI/STTC/CD: ~0.61-0.62).
+Falls back to uniform reliability=1.0 (no scaling) if the eval JSON isn't
+present yet.
+
+Reward-contribution logging was also added to `step07_rl_finetuning.py`'s
+training loop (`rl_training_log.csv` gains `contrib_{morph,hrv,real,diag}`
+columns = weight × raw component score, plus a per-iteration contribution%
+log line). Re-evaluation checkpoint: after ~1000 PPO updates on a real GPU
+run, pull the logged contribution percentages and revisit the 0.35 weight
+using that evidence -- not another round of reasoning from macro-F1 alone.
+
+## `TRTR_macro_F1` std=0 across seeds: expected, not a bug
+
+The per-seed diagnostic JSON showed `TRTR_macro_F1.std == 0.0` across all
+3 seeds while every other metric (DTW, MMD, FED, TSTR_macro_F1, ...) had
+nonzero std. This looked suspicious enough to demand verification before
+trusting it. Checked directly against the run's terminal log: `"Computing
+TRTR baseline (train on real, test on real)"` fires once, at 09:51:22,
+before `"Seed 42"` begins at 09:53:53 -- TRTR training happens once,
+outside the seed loop, and is reused for all 3 seeds. This is correct:
+TRTR only depends on real PTB-XL data, which doesn't vary by generation
+seed, so training it 3x would be wasted GPU time. TSTR (which depends on
+seed-varying synthetic samples) is correctly recomputed per seed and
+does show nonzero std. `std=0` is the expected signature of "trained
+once, evaluated once, reused" -- do not re-flag this as a bug without
+re-reading this entry first.
+
+## Reliability scaling made ablatable, PPO diagnostics added, checkpoint eval split by cost
+
+Three follow-ups to the reliability-scaling fix above, implemented in
+`step06_reward_function.py` / `step07_rl_finetuning.py` / `config.yaml`:
+
+**Ablatable, not forced on.** `DiagnosticUtilityReward` takes
+`use_reliability: bool`, wired from `cfg.reward.use_reliability_scaling`
+(default `true`). Forcing the scaling on would remove the ability to run
+the with/vs-without comparison that actually demonstrates whether it
+helped -- needed for the paper, not just engineering hygiene.
+
+**Raw + weighted contribution, both logged.** `rl_training_log.csv` now
+carries both the raw `r_{morph,hrv,real,diag}` and the weighted
+`contrib_{morph,hrv,real,diag}` (= weight x raw). Weighted-only logging
+can't distinguish "small raw score, large coefficient" from "large raw
+score, small coefficient" -- they'd look identical in a weighted-only log.
+
+**Standard PPO diagnostics added**, with one documented limitation:
+policy_loss, KL, importance ratio, clip fraction, advantage mean/std,
+reward mean/std are logged for DDPO (PPO variant). `ratio`/`clip_fraction`
+are blank (not 0/1) for GRPO -- GRPO has no importance-sampling ratio,
+it recomputes log-probs fresh each call. `value_loss` is not logged for
+either: this DDPO setup has no critic/value network, only an EMA scalar
+baseline, so a value-loss number would have to be fabricated. Likewise
+there's no closed-form policy entropy for the score-matching log-prob
+proxy; `logprob_std` (spread of the log-prob across the rollout batch) is
+logged as a stochasticity stand-in, explicitly not a real entropy value.
+
+**Checkpoint evaluation split by cost**, `cfg.rl.eval_checkpoints` /
+`cfg.rl.full_eval_checkpoints` (default `[250,500,1000,2000,5000]` /
+`[1000,5000]`): lightweight eval (frozen TRTR classifier confidence,
+no retrain, + KL-to-base already computed by the trainer) runs at every
+entry so a stalled or regressing run is caught cheaply. The full
+Stage-3-equivalent suite -- Mentor Classifier retrain via
+`mentor_eval.classification_validation --ckpt <rl_checkpoint> --out-dir
+...` -- only runs at the coarser subset, since `classification_validation.
+py`'s Stage 1 retrains a classifier from scratch (30 epochs, several
+GPU-minutes) on every invocation (confirmed from source, see the entry
+above); running that at every one of 5+ checkpoints would silently stack
+a nontrivial, likely-unintended compute cost onto RL training itself.
+
+A3-similarity is deliberately left out of the lightweight eval
+(`reward_a3` is still an open item, no standalone metric function exists
+yet to call -- reported as `"not_yet_available"` in the eval JSON rather
+than faked). Subband breakdown
+(`mentor_eval.run_subband_analysis`) and the conditioning diagnostic
+(`mentor_eval.run_disease_conditioning_analysis`) are also NOT wired into
+the full-suite checkpoint hook: both hardcode
+`outputs/models/diffusion_best.pt` with no `--ckpt` override (unlike
+`classification_validation.py`, which already supports one), so pointing
+them at a specific RL checkpoint would mean either adding that override
+first or temporarily overwriting the frozen baseline checkpoint other
+tooling depends on -- neither was done here. **Open follow-up**: add a
+`--ckpt` override to those two scripts, mirroring
+`classification_validation.py`'s existing pattern, before the full
+checkpoint suite can include subband/conditioning results.
+
+## Early stopping and checkpoint selection: gated on the Mentor Classifier only, never TRTR
+
+Both features were about to be wired to the frozen TRTR classifier by
+default (`trtr_macro_f1`, checked at every lightweight checkpoint, i.e.
+every 250 iterations) -- caught before implementation. TRTR IS the
+training reward signal (`DiagnosticUtilityReward`); stopping training or
+selecting a "best" checkpoint by watching TRTR score is not evidence of
+generalisable improvement, it is watching the training objective
+converge and calling it convergence -- the same circularity already
+resolved for the reward function itself via reliability scaling (see
+above), now showing up one layer up in the evaluation pipeline if left
+unchecked. TRTR and TSTR are already known to disagree by 0.198
+macro-F1 on this project's own numbers; there is no basis to assume TRTR
+and the Mentor Classifier would agree either.
+
+There's also a noise argument specific to this project: small-sample
+generated-data metrics have shown real run-to-run variance before (e.g.
+S3-002's 0.3967 vs. 0.3633 accuracy discrepancy, attributed to n=200
+sampling variance in `Stage3_Comparison.md`). A per-checkpoint metric
+computed from a handful of samples is not necessarily stable enough to
+gate a stop decision on without that being checked first.
+
+Implemented instead (`step07_rl_finetuning.py`, `config.yaml`):
+
+- `rl.checkpoint_selection.metric` defaults to `mentor_macro_f1` (from
+  `classifier_generated_eval.json`, the Mentor Classifier retrained from
+  scratch on real data and evaluated on THIS checkpoint's generated ECGs)
+  -- not `trtr_macro_f1`. Evaluated and updated only at
+  `full_eval_checkpoints`. Selected checkpoint copied to
+  `outputs/models/diffusion_rl_selected.pt`, kept distinct from the
+  existing training-reward-based `diffusion_rl_best.pt` (that one still
+  tracks `mean_rd["total"]` every iteration for monitoring, but should
+  NOT be treated as "the" checkpoint to report/deploy -- selecting on the
+  training reward has the exact same circularity problem).
+- `rl.early_stopping` (opt-in, disabled by default): patience-based on
+  the same `mentor_macro_f1` metric, checked ONLY at
+  `full_eval_checkpoints`. The lightweight TRTR/KL-to-base checkpoints
+  every 250 iterations still write to `checkpoint_metrics.json` for trend
+  visibility, but cannot independently trigger a stop -- enforced in code
+  (`_lightweight_checkpoint_eval` never touches `es_bad_count` or
+  `best_selected_metric`; only the `it in full_eval_checkpoints` branch
+  does).
+- Both `metric`/`mode` remain configurable per the original proposal --
+  only the *default* changed, from the circular TRTR-based one to the
+  independent Mentor-Classifier-based one.
+- `checkpoint_metrics.json` (consolidated, one growing list under
+  `outputs/results/`) records both lightweight and full-eval entries with
+  a `"kind"` field, for later figures/tables without rerunning anything.
+
+Not yet addressed: per-checkpoint sampling stability of
+`mentor_macro_f1` itself (Stage 2 in `classification_validation.py`
+generates 100 samples/class per call) has not been separately quantified
+across repeated calls at the same checkpoint. Before trusting a single
+full-eval checkpoint's number for an early-stop decision on a real GPU
+run, it would be worth checking whether that number moves as much
+run-to-run as the earlier n=200 Stage 3 finding suggests it might.
+
+**Confirmed**: `checkpoint_selection.metric` was left at the single
+`mentor_macro_f1` default, not preemptively built out into a composite
+score with A3 similarity or anything else. A3 doesn't exist as a
+computable metric yet (open item, see above), so a "composite" would
+either silently drop that term or fabricate a placeholder for it -- both
+worse than waiting for real RL results before deciding whether a
+composite is even warranted. Composite scoring stays a documented
+possibility (`rl.checkpoint_selection.metric` is a free-form string key
+into `_full_checkpoint_eval`'s returned metrics dict, so it's a config
+edit + one new key in that dict later, not a redesign) but was
+deliberately not implemented ahead of evidence.
+
+## Priority-ordered pre-GPU-run checks: PPO correctness gates latency/gradient instrumentation
+
+Three checks were requested before a real GPU run: (1) verify PPO/GRPO
+actually updates the policy, (2) benchmark reward-component latency
+(specifically `reward_a3`'s wavelet cost, per this project's own Stage 3
+subband-analysis logs showing that computation isn't instantaneous), (3)
+log gradient norm. (1) is correctness -- if the policy-gradient wiring is
+broken, (2) and (3) would be measuring a run that isn't training
+anything -- so it gates the other two rather than running as a separate,
+equal-priority pass.
+
+**Correctness check #2, implemented**: `step07_rl_finetuning.py --smoke-test`
+runs `rl.smoke_test_iterations` (default 10) real PPO/GRPO iterations with
+checkpoint saving and the eval-checkpoint schedule disabled (nothing worth
+keeping or evaluating at n=10), and reports four explicit, measurable
+checks in `outputs/results/smoke_test_report.json` rather than an
+eyeballed read of a training curve: policy parameter checksum actually
+changed, KL was nonzero at some point, grad_norm was never exactly zero,
+and mean reward in the second half of the run didn't degrade vs. the
+first half. Also reuses the existing frozen-vs-policy progress plot
+(`_make_progress_plot`, already fires during a 10-iteration run at
+`plot_every_iters=5`) as the visual "samples visibly differ" check,
+rather than adding a second mechanism for the same thing.
+
+**Latency check #1, implemented but scope-limited**: `ClinicalReward` now
+times each component (`get_timing_summary()`, mean/max ms, near-zero
+overhead) and the smoke test logs/saves it. **This does NOT cover
+`reward_a3`** -- confirmed again from source: the reward function actually
+implemented in `step06_reward_function.py` is still 4-term
+(morph/hrv/real/diag); `reward_a3` (the wavelet subband term this latency
+concern is specifically about) remains an open, unimplemented Decisions.md
+item with no code to time yet. The smoke test report explicitly logs this
+gap rather than letting "reward latency looks fine" get read off numbers
+that don't include the component the concern was actually about. Must be
+re-benchmarked once `reward_a3` exists.
+
+**Gradient check #3, implemented**: `grad_norm` (the pre-clip total norm,
+already computed for free by `clip_grad_norm_`'s return value, previously
+discarded) is now logged per iteration for both PPO and GRPO, alongside
+the existing policy_loss/KL/clip_fraction diagnostics, and the training
+loop warns explicitly if `grad_norm == 0.0` at any logged iteration
+(pointing back at the smoke test as the tool for diagnosing it, rather
+than a real run being the first place a dead-gradient bug would surface).
+
+## reward_a3 IMPLEMENTED (option 2 chosen) — and two things found while doing it
+
+**Decision**: `reward_a3` was implemented before the smoke test, not
+deferred to a follow-up phase. Every weight discussion, reliability-
+scaling ablation, and reward-contribution log column for "A3" up to this
+point had been describing a component that didn't exist in
+`step06_reward_function.py` — the reward being smoke-tested and about to
+be trained against would have been missing the one term motivated by this
+project's own strongest, most-replicated finding (A3/D1 divergence across
+every Stage 3 architecture). Redoing the smoke test, latency benchmark,
+and weight decisions a second time after bolting A3 on post-hoc was worse
+than doing it once, correctly, now.
+
+**Shared helper, not a second implementation.** `A3Reward` (new class in
+`step06_reward_function.py`) imports `mentor_eval.subband_features.
+extract_subband_energy_features` directly — the exact function Stage 3's
+`subband_similarity_metrics.py` already uses (bior4.4, J=3, confirmed from
+that module's own docstring, not assumed). The scoring formula (ridge-
+regularised Mahalanobis distance) is the same formula
+`mentor_eval.similarity_metrics.mahalanobis_distance` uses, but factored:
+`A3Reward.__init__` precomputes (mean, inv_cov) ONCE per class from a new
+`outputs/processed/a3_subband_stats.json` (built by a new Stage 7 in
+`step03_eda_and_class_mapping.py`, `stage7_a3_subband_stats`, itself
+calling `extract_subband_energy_batch` — same shared function again)
+rather than recomputing the full covariance from raw samples on every
+reward call, which `mahalanobis_distance` as written does and which would
+be far too expensive inside a PPO rollout loop called thousands of times.
+This is a documented, necessary divergence (see `A3Reward`'s docstring for
+exactly what could cause its number to disagree with a fresh
+`subband_similarity_metrics.py` run: different real-sample draw for the
+reference distribution vs. that script's own comparison set) — not an
+independently-maintained duplicate that could silently drift on what "A3
+energy" means, since the feature extraction is imported, not reimplemented.
+
+**Critical finding — the cited validation reference numbers do not exist.**
+The instruction to validate `reward_a3` against "STEMI A3 Mahalanobis ≈
+5.96, Bhattacharyya ≈ 8.56" from `Stage3_Subband_Master_Comparison.md`
+was checked against that file directly before writing any validation
+code. The file's own header states **"0/72 (candidate, disease, subband)
+rows evaluated"** — every single row, including S3-001/STEMI/A3, reads
+`"not yet evaluated -- no subband_similarity_metrics.csv found"`.
+`subband_similarity_metrics.py` has never been run to completion on this
+project (needs `outputs/models/diffusion_best.pt`, never available on
+this local machine). Grepped the entire repo for "5.96" — zero matches
+anywhere. **These specific reference numbers were never real; they do not
+exist in this codebase.** This is not a criticism of anyone in this
+thread — it's exactly the same discipline already applied to `tstr_
+classifier.pt`, the `std=0` question, and the weight-vs-macro-F1
+conflation earlier in this file: check the source before trusting a
+specific cited number, especially one being used as a pass/fail gate.
+
+**Validation script written** (`validate_a3_reward.py`, repo root):
+implements all three requested comparisons —
+(1) real-vs-real, (2) S3-001-generated-vs-real (needs `diffusion_best.pt`,
+`[BLOCKED]`-and-skipped not faked if absent — true on this machine right
+now), (3) mismatched-disease — with explicit ordering assertions (real >
+mismatched, real >= generated), plus a numeric-check section that reads
+`Stage3_Subband_Master_Comparison.csv` fresh off disk (never hardcodes a
+number) and reports `[BLOCKED: no reference numbers]` for exactly the
+reason above instead of comparing against a fabricated figure. **Not yet
+run** — needs `X_test`/`X_train`/PTB-XL data and, for comparison (2), a
+diffusion checkpoint, none available on this machine. Must be run (and
+pass) on the GPU server before `a3` gets a nonzero weight trusted in
+production, per the same "wiring bug, not new information" standard
+already used for every other metric in this project. The mentor-class
+mapping used inside the script (`NORM→Normal, MI→STEMI, STTC→NSTEMI`) was
+verified against `mentor_eval/class_mapping.py`'s `MENTOR_TO_TRAINED_CLASS`
+directly — an initial draft had `OTHER→NSTEMI`, which was wrong (STTC is
+the correct mapping); caught before finalizing, not after.
+
+**Separate, more consequential bug found while wiring this in**:
+`get_reward()` was ALWAYS building `ClinicalReward`'s weights from the
+hardcoded `ABLATION_CONFIGS["full"]` dict (`{morph:0.3, hrv:0.3, real:0.2,
+diag:0.2}`), never from `cfg.reward.weights` (`config.yaml`) — even when
+`config_name="full"`, the actual training configuration. Every weight
+number discussed for `config.yaml` across this entire thread (0.4/0.4/
+0.15/0.05, the reliability-scaling defaults) was dead config that no run
+ever actually used. **Fixed**: `config_name="full"` now reads
+`cfg.reward.weights` when present, falling back to the `ABLATION_CONFIGS`
+default only if absent. Named ablation variants (`diag_only`, `no_morph`,
+...) intentionally still ignore `cfg` and use the fixed table, by design
+— that's the point of an ablation study. `config.yaml`'s weights were
+updated to a real 5-term split (`diag .37 / a3 .21 / morph .16 / real .16
+/ hrv .10`) — **temporary normalized defaults, not experimentally
+validated**: arithmetic on the previously-recorded provisional 6-term
+split above (drop the not-yet-implemented regularization term, rescale
+the remaining 0.95 to 1.0), not evidence. "Derived" was the wrong word for
+this the first time it was written here — it implies the split came from
+data, when it's a renormalized guess. Corrected in both this file and
+`config.yaml`'s comment. These weights are now genuinely what
+`get_reward("full", ...)` uses (the bug above meant they weren't before),
+but "load-bearing" and "validated" are not the same thing — still
+explicitly unvalidated, still Dr. Balaji's call.
+
+**Approved low-risk additions also implemented**: stacked KL/reward/
+grad_norm-vs-iteration plot (`smoke_test_diagnostics.png`); same-seed
+frozen-vs-policy comparison (L2 distance, cosine similarity, A3-reward
+delta, fixed seed 1234) added as a fifth explicit smoke-test check
+(`same_seed_samples_measurably_differ`); `baseline_reward.json` for later
+delta reporting.
+
+**Sequencing for the GPU run, in order**: (1) run
+`step03_eda_and_class_mapping.py` (produces `a3_subband_stats.json`, Stage
+7); (2) run `validate_a3_reward.py` — must pass the ordering checks before
+proceeding, numeric Stage-3 comparison will likely still report a WARNING
+until `subband_similarity_metrics.py` has also been run at least once; (3)
+`python step07_rl_finetuning.py --smoke-test`; (4) only after all of the
+above pass, begin real PPO training.
+
+## CORRECTION: "no GPU/data locally" was wrong — this repo has a `.venv` with torch/pywt/neurokit2, real PTB-XL data, and a trained `diffusion_best.pt`
+
+Every prior entry in this file (and every response in this thread) claimed
+nothing could be run locally, based on a bare `python3 -m py_compile`
+check that failed with `ModuleNotFoundError: No module named 'torch'`.
+That check never looked for a project virtualenv. `.venv/` in this repo
+has torch 2.12.0, pywt, neurokit2, wfdb, pandas, omegaconf, pytest — and
+`outputs/processed/X_train.npy` / `X_test.npy` / `diffusion_best.pt` are
+all real, non-empty files (X_train: 17418 x 1000 x 12 real PTB-XL signals;
+checkpoint: real state dict with `model`/`ema_shadow`/`class_names` keys).
+Correcting this now rather than letting it stand.
+
+**Actually run, for real, using `.venv/bin/python`:**
+
+1. `step03_eda_and_class_mapping.py` — ran end-to-end successfully.
+   `a3_subband_stats.json` now exists for real (6 classes, n=200 each,
+   mean A3 energy 1.90–8.36 across classes — CD/OTHER visibly higher than
+   NORM, consistent with more disordered slow-wave morphology in those
+   classes, though this is not itself a validated claim).
+
+2. `test_reward_weights.py` (new, `pytest`) — 4/4 PASSED. Confirms
+   `cfg.reward.weights` isolation (`diag=1`→total==r_diag,
+   `a3=1`→total==r_a3, zero-weight components produce zero leakage,
+   mixed-weight arithmetic matches manual calculation).
+
+3. `validate_a3_reward.py` — ran for real, and it caught a real bug on
+   the first run: generated-vs-real mean reward (0.8174) exceeded
+   real-vs-real (0.7092), which the ordering check correctly flagged as
+   `[FAIL]`. Root cause, found by inspecting generated-sample statistics
+   directly: the script was calling `generate_for_class(..., stats=
+   preprocessing_stats.json)`, which denormalises output to raw-mV scale
+   (std collapsed to ~0.11) — but `A3Reward`'s reference distribution was
+   built from z-score-normalised `X_train` (std ~0.8-1.0), and `X_test`
+   (used for the real-vs-real/mismatched comparisons) is also z-score
+   space. Comparing across two different scales produced a meaningless
+   number. **This was a bug in the validation script's own scale handling,
+   not in `A3Reward` or `extract_subband_energy_features`.** Fixed
+   (`stats=None`, keeping everything in z-score space) and re-run:
+   generated-vs-real dropped to 0.7195 vs. real-vs-real's 0.7092 — much
+   closer, but the strict mean-comparison ordering check **still reports
+   `[FAIL]`** (generated is still marginally higher, by ~0.01, at n=20
+   samples/class). Mismatched-disease ordering check `[PASS]`s cleanly
+   (0.4959, well below both).
+
+   **Open item, not resolved here**: is that ~0.01 gap sampling noise at
+   n=20/class (individual per-class real-vs-real rewards already range
+   0.60–0.76, so a 0.01 shift in the aggregate mean is plausible noise),
+   or a genuine small residual where the un-fine-tuned baseline model's
+   bulk A3 energy already roughly matches real data (which would actually
+   be consistent with Stage 3's own framing of A3 as the "dominant
+   *remaining*" divergence among several already-small gaps, not
+   necessarily a large one)? The script's pass/fail logic was not loosened
+   to force a PASS — that would repeat exactly the "wave away an
+   inconvenient number" failure mode this project has spent this whole
+   thread avoiding. Needs either a larger sample size or a proper
+   significance test (e.g. bootstrap CI on the mean difference) before
+   concluding either way. **Do not treat `reward_a3` as fully validated
+   yet** — the scale bug is fixed and confirmed, but the ordering check
+   has not cleanly passed.
+
+**Check #2 (frozen reference statistics) — verified clean, not a "well
+technically" answer.** Grepped every call site: `a3_subband_stats.json`
+is written in exactly one place (`step03_eda_and_class_mapping.py`
+Stage 7, from `X_train` — real PTB-XL only). `A3Reward._cache` is written
+exactly once, inside `__init__`, from that file; `compute()` only reads
+`self._cache`, never writes to it. `A3Reward` is constructed exactly once
+per `get_reward()` call, and `get_reward()` is called once in
+`step07_rl_finetuning.py`'s `train()`, before the PPO iteration loop
+starts — not inside it. No code path recomputes or touches
+`a3_subband_stats.json` during RL training. Confirmed, not assumed.
+
+**Check #1 (shared helper, not duplicated) — verified via grep, exact
+call sites**: `mentor_eval/subband_similarity_metrics.py:125-126`
+(Stage 3 evaluation), `step03_eda_and_class_mapping.py:609`
+(`stage7_a3_subband_stats`), and `step06_reward_function.py:511`
+(`A3Reward.__init__`, used by `compute()`) all call
+`mentor_eval.subband_features.extract_subband_energy_features` (directly,
+or via `extract_subband_energy_batch`, which itself just calls the
+single-sample function per-sample — `subband_features.py:126`). One
+function, three consumers, confirmed by direct grep, not asserted.
+
+**Check #3 (fail loudly on missing stats)** — `A3Reward.__init__` now
+raises `RuntimeError` (not a silent 0.5-neutral fallback) if
+`a3_subband_stats.json` is missing/empty. Wording updated: "derived" →
+"temporary normalized defaults — renormalized from an earlier unvalidated
+6-term split, not experimentally validated" in both `config.yaml` and
+this file. `validate_a3_reward.py`'s Stage-3-comparison-unavailable
+messages changed from `[BLOCKED]` to `WARNING: Reference Stage3 subband
+metrics unavailable — only ordering validation executed, numeric
+validation skipped` (the genuinely-blocking cases — missing checkpoint,
+missing X_test, missing PTB-XL CSVs — still say `[BLOCKED]`, correctly,
+since those really do stop that branch entirely).
+
+## Bootstrap uncertainty, PASS/INCONCLUSIVE/FAIL, frozen-stats test, metadata sanity check — all implemented AND run for real
+
+Follow-up round after the point-estimate FAIL above was correctly flagged
+as unfalsifiable without an uncertainty bound. All four items below were
+run on this machine (`.venv/bin/python`, real PTB-XL data, real
+`diffusion_best.pt` — see the environment-correction entry above), not
+just written.
+
+**1. Bootstrap/repeated-sampling uncertainty.** `validate_a3_reward.py`
+now pools 3 independent draws (seeds 42/123/456 — same pattern as the
+earlier `n_seeds=3` TSTR/TRTR baseline) per comparison, giving n=360
+samples/group (6 classes x 60/class), then computes a 95% percentile
+bootstrap CI on the mean (`_bootstrap_ci`, 2000 resamples).
+
+**2. PASS/INCONCLUSIVE/FAIL, actually returned.** Real run's result:
+
+    real-vs-real:       mean=0.7013  95% CI=[0.6859, 0.7160]  n=360
+    mismatched:         mean=0.5288  95% CI=[0.5001, 0.5572]  n=360
+    -> real_vs_mismatched: PASS (CIs don't overlap, correct direction)
+
+    generated-vs-real:  mean=0.7218  95% CI=[0.7077, 0.7354]  n=360
+    real-vs-real:        mean=0.7013  95% CI=[0.6859, 0.7160]  n=360
+    -> generated_vs_real: INCONCLUSIVE (CIs overlap; +0.0205 gap not
+       distinguishable from noise at this sample size)
+
+    OVERALL: INCONCLUSIVE
+
+This is the same +0.0205ish gap the earlier point-estimate run reported as
+a hard FAIL (0.7195 vs 0.7092, single draw) — the bootstrap CI shows that
+number was never distinguishable from noise in the first place. Neither a
+forced PASS nor a forced FAIL would have been honest; INCONCLUSIVE is the
+correct answer given the data collected so far, not a hedge.
+
+**Action taken, not deferred**: `config.yaml`'s `a3` weight was pulled
+back from 0.21 to **0.00** immediately, per the explicit instruction not
+to enable it in any real run until this validator returns a real PASS,
+not INCONCLUSIVE. The freed 0.21 was redistributed proportionally across
+the other four terms (`diag .47 / morph .20 / real .20 / hrv .13`, still
+summing to 1.0) rather than re-guessed. `reward_a3` remains fully
+implemented, wired, tested, and available — just gated to zero weight
+until either a larger sample/seed count narrows the CI enough to resolve
+the ordering, or `subband_similarity_metrics.py` is run on the GPU to
+provide an independent second check. **Next step to actually resolve this
+(not done here)**: re-run `validate_a3_reward.py` with more seeds (e.g.
+10 instead of 3) or larger `n_samples` per seed to narrow the CI, OR treat
+0.7013 vs 0.7218 as close enough given the un-fine-tuned baseline model
+already being S3-001 (Stage 3's best candidate) and accept the
+uncertainty explicitly with sign-off before re-enabling a3.
+
+**3. `test_a3_reference_is_frozen.py`** — 2 tests, both run and PASSED
+(`.venv/bin/pytest`). Deep-copies `A3Reward._cache` before a `compute()`
+call (and again after 20 calls x 6 classes, to catch a mutation bug that
+only appears after N calls, e.g. an accidental running-average update),
+asserts bit-identical after. Closes the loop on the earlier grep-based
+manual verification with a permanent regression test.
+
+**4. Metadata + drift sanity check.** `a3_subband_stats.json` now nests
+under `{"_metadata": {...}, "classes": {...}}` — metadata includes
+dataset (explicitly "PTB-XL, real only"), split, wavelet, decomposition
+level, subband, normalization, and a UTC creation timestamp.
+`A3Reward.__init__` reads this metadata and raises `RuntimeError` if the
+file's `wavelet`/`decomposition_level`/`dataset` don't match this code's
+actual `mentor_eval.subband_features.WAVELET`/`LEVELS` constants (read
+from that module, not hardcoded twice) — prevents silent drift if the
+stats file is ever regenerated months from now with different parameters.
+Old-format files without `_metadata` are still accepted (flat dict) but
+log a warning rather than hard-failing, for backward compatibility.
+`get_reward()`, `validate_a3_reward.py`, and `test_a3_reference_is_frozen.py`
+were all updated for the new nested format and re-run successfully.
+
+**Also corrected**: this file's own prior "Mac has no GPU/data" framing
+was itself wrong — see the correction entry above. `.venv/bin/python`
+here has torch/pywt/neurokit2 and real data; `hostname`/`uname` confirm
+this is the user's actual MacBook Air (Apple M3), not a separate sandbox,
+not `himtenduh`. CPU-only, no CUDA, but fine for validation-scale work
+(the runs above took low tens of seconds to a few minutes each, not
+hours) — not fine for real PPO training at scale, which still needs
+`himtenduh`.

@@ -12,11 +12,15 @@ Stages:
   4. PQRST morphology statistics per class (→ reward function in step06)
   5. HRV statistics for NORM class (→ reward function in step06)
   6. Validation table
+  7. A3-subband (slow-wave) reference distribution per class, for
+     step06's A3Reward — same feature extraction as Stage 3's
+     mentor_eval/subband_similarity_metrics.py (bior4.4, J=3), reused not
+     reimplemented (see mentor_eval/subband_features.py)
 
 Reads from:
   data/ptbxl/ptbxl_database.csv   (PTB-XL metadata with strat_fold + scp_codes)
   data/ptbxl/scp_statements.csv   (SCP code descriptions + diagnostic_class)
-  outputs/processed/X_train.npy   (preprocessed signals, for Stages 3–5)
+  outputs/processed/X_train.npy   (preprocessed signals, for Stages 3–5, 7)
   outputs/processed/record_ids_train.npy
 
 Writes to:
@@ -25,6 +29,7 @@ Writes to:
   outputs/processed/class_counts.json     {class_name: {train,val,test}}
   outputs/processed/morphology_stats.json {class: {pr_ms,qrs_ms,qt_ms,hr_bpm}}
   outputs/processed/hrv_stats.json        {NORM: {sdnn_ms, rmssd_ms}}
+  outputs/processed/a3_subband_stats.json {class: {mean: [12], cov: [12x12], n}}
   outputs/results/fig01_class_distribution.{pdf,png}
   outputs/results/fig02_ecg_examples.pdf
 
@@ -546,6 +551,99 @@ def stage5_hrv(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Stage 7 — A3-subband (slow-wave) reference distribution per class
+# ──────────────────────────────────────────────────────────────────────────────
+
+def stage7_a3_subband_stats(
+    X_train:       np.ndarray,
+    train_primary: np.ndarray,
+    final_classes: list,
+    processed_dir: Path,
+    rng:           np.random.Generator,
+    log,
+    n_per_class:   int = 200,
+) -> dict:
+    """
+    Per-class mean + covariance of the A3-subband (0-6.25 Hz at fs=100 Hz:
+    P-wave, T-wave, ST-segment, baseline) 12-lead energy feature, for
+    step06_reward_function.py's A3Reward.
+
+    Directly motivated by Stage 3's dominant finding, replicated across every
+    architecture evaluated there: A3-subband divergence is the largest
+    remaining gap between generated and real ECGs
+    (see Stage3_Subband_Master_Comparison.md).
+
+    Feature extraction is `mentor_eval.subband_features.
+    extract_subband_energy_batch` — the EXACT function Stage 3's evaluation
+    script (mentor_eval/subband_similarity_metrics.py) already uses (bior4.4
+    wavelet, J=3, mean-squared-coefficient energy per lead). Imported, not
+    reimplemented, so Stage 3 evaluation and this Stage 4 reward reference
+    distribution cannot silently drift apart on what "A3 energy" means.
+
+    MIN_SAMPLES_FOR_COVARIANCE_MULTIPLIER (5x the 12-dim feature = 60
+    samples/class minimum) is the same stability threshold
+    mentor_eval/similarity_metrics.py already enforces for its own
+    Mahalanobis/Bhattacharyya calculations — classes below it are flagged,
+    not silently computed with an ill-conditioned covariance.
+    """
+    from mentor_eval.subband_features import extract_subband_energy_batch, SUBBAND_NAMES, WAVELET, LEVELS
+    from mentor_eval.similarity_metrics import MIN_SAMPLES_FOR_COVARIANCE_MULTIPLIER
+
+    a3_band_idx = SUBBAND_NAMES.index("A3")
+    n_leads     = X_train.shape[2]
+    min_needed  = MIN_SAMPLES_FOR_COVARIANCE_MULTIPLIER * n_leads
+
+    log.info(f"A3-subband stats: n={n_per_class}/class (min {min_needed} for stable covariance)")
+    all_stats: dict[str, dict] = {}
+
+    for cls in final_classes:
+        idx_pool = np.where(train_primary == cls)[0]
+        if len(idx_pool) < min_needed:
+            log.warning(
+                f"  {cls}: only {len(idx_pool)} training records "
+                f"(< {min_needed} needed) — skipped, no A3 reference for this class."
+            )
+            continue
+
+        sample_idx = rng.choice(idx_pool, size=min(n_per_class, len(idx_pool)), replace=False)
+        feats_full = extract_subband_energy_batch(X_train[sample_idx])       # (n, 4*12)
+        feats_a3   = feats_full[:, a3_band_idx * n_leads:(a3_band_idx + 1) * n_leads]  # (n, 12)
+
+        mean = feats_a3.mean(axis=0)
+        cov  = np.cov(feats_a3, rowvar=False)
+
+        all_stats[cls] = {
+            "mean": mean.tolist(),
+            "cov":  cov.tolist(),
+            "n":    int(len(sample_idx)),
+        }
+        log.info(f"  {cls}: n={len(sample_idx)}  mean_energy={mean.mean():.4f}")
+
+    # Metadata so A3Reward can sanity-check the file it's loading rather than
+    # trusting it blindly — catches silent drift if this file is ever
+    # regenerated months from now with different wavelet/level/normalisation
+    # choices without anyone updating the reward code to match.
+    import datetime
+    metadata = {
+        "dataset":         "PTB-XL (real only — this is a training reference, must never include generated samples)",
+        "split":           "train",
+        "n_per_class_requested": n_per_class,
+        "min_samples_for_covariance": min_needed,
+        "wavelet":         WAVELET,
+        "decomposition_level": LEVELS,
+        "subband":         "A3",
+        "feature_normalization": "none (raw z-score-space signal in, mean-squared-coefficient energy out — same space as X_train.npy/X_test.npy)",
+        "created_utc":     datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+
+    out_path = processed_dir / "a3_subband_stats.json"
+    with open(out_path, "w") as f:
+        json.dump({"_metadata": metadata, "classes": all_stats}, f, indent=2)
+    log.info(f"Saved a3_subband_stats.json → {out_path}")
+    return all_stats
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Stage 6 — Validation table
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -788,6 +886,18 @@ def main() -> None:
                 all_ok = all_ok and ok
                 status = "✓" if ok else "✗"
                 log.info(f"  {status} {cls} in {split}: {n}")
+
+    # ── Stage 7 — A3-subband reference distribution ─────────────────────────
+    log.info("=" * 60)
+    log.info("STAGE 7 — A3-subband reference distribution")
+    log.info("=" * 60)
+    if X_train is not None:
+        stage7_a3_subband_stats(
+            X_train, train_primary, final_classes, processed_dir, rng, log,
+            n_per_class=200,
+        )
+    else:
+        log.info("Skipped (no X_train.npy)")
 
     log.info("=" * 60)
     print(f"✓ EDA complete. Final classes: {final_classes}. Morphology stats saved.")

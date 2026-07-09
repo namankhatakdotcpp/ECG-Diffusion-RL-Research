@@ -44,7 +44,11 @@ KL(π_θ ‖ π_θ₀) ≈ E_t[‖ε_θ(x_t, t, c) − ε_θ₀(x_t, t, c)‖²]
 
 OUTPUTS
 -------
-  outputs/models/diffusion_rl_best.pt         — best policy checkpoint
+  outputs/models/diffusion_rl_best.pt         — best training-reward checkpoint
+  outputs/models/diffusion_rl_selected.pt     — best checkpoint by independent
+                                                 Mentor Classifier eval (heavy
+                                                 checkpoints only; see
+                                                 rl.checkpoint_selection)
   outputs/models/rl_ckpt_iter{N:04d}.pt       — periodic checkpoints
   logs/rl_training_log.csv                    — per-iteration metrics
   outputs/results/rl_progress_iter{N:04d}.png — visual progress snapshots
@@ -54,8 +58,11 @@ from __future__ import annotations
 
 import csv
 import json
+import shutil
+import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 import matplotlib
 matplotlib.use("Agg")
@@ -266,7 +273,7 @@ class DDPOTrainer:
             except Exception:
                 reward_dict = {
                     "total": 0.0, "r_morph": 0.0,
-                    "r_hrv": 0.0, "r_real": 0.0, "r_diag": 0.5,
+                    "r_hrv": 0.0, "r_real": 0.0, "r_diag": 0.5, "r_a3": 0.0,
                 }
 
             # ── Old log prob (score-matching proxy, no grad) ──────────────────
@@ -293,13 +300,29 @@ class DDPOTrainer:
         return rollouts
 
     def ppo_update(self, rollouts: list[dict], n_epochs: int = 4) -> dict[str, float]:
-        """Clipped PPO loss + KL regularisation; returns mean metrics."""
+        """
+        Clipped PPO loss + KL regularisation; returns mean metrics.
+
+        No critic/value network in this DDPO setup (advantage comes from an
+        EMA scalar baseline, not a learned value function) — 'value_loss' is
+        therefore not applicable and is omitted rather than faked. Likewise
+        there's no closed-form policy entropy for the score-matching log-prob
+        proxy; `logprob_std` (spread of lp_new across the batch) is logged as
+        a stand-in stochasticity signal instead of a real entropy number.
+        """
         class_idx   = rollouts[0]["class_idx"]
         class_label = torch.tensor([class_idx], dtype=torch.long, device=self.device)
         clip        = self.ppo_clip
 
-        agg = {"loss": 0.0, "kl": 0.0, "ratio": 0.0}
-        n   = 0
+        rewards = np.array([ro["reward"]["total"] for ro in rollouts], dtype=float)
+
+        agg = {
+            "loss": 0.0, "policy_loss": 0.0, "kl": 0.0, "ratio": 0.0,
+            "clip_fraction": 0.0, "grad_norm": 0.0,
+        }
+        advantages: list[float] = []
+        logprobs:   list[float] = []
+        n = 0
 
         self.policy.train()
 
@@ -339,18 +362,33 @@ class DDPOTrainer:
 
                 self.opt.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(self.policy.parameters(), self.grad_clip)
+                # clip_grad_norm_ returns the pre-clip total gradient norm —
+                # capture it rather than discarding it, so a vanishing/
+                # exploding gradient signal doesn't have to be inferred
+                # indirectly from the loss/KL curves alone.
+                grad_norm = nn.utils.clip_grad_norm_(self.policy.parameters(), self.grad_clip)
                 self.opt.step()
                 self.ema.update(self.policy)
 
-                agg["loss"]  += loss.item()
-                agg["kl"]    += kl.item()
-                agg["ratio"] += ratio.item()
+                ratio_val = ratio.item()
+                agg["loss"]          += loss.item()
+                agg["policy_loss"]   += loss_ppo.item()
+                agg["kl"]            += kl.item()
+                agg["ratio"]         += ratio_val
+                agg["clip_fraction"] += float(abs(ratio_val - 1.0) > clip)
+                agg["grad_norm"]     += float(grad_norm)
+                advantages.append(advantage)
+                logprobs.append(lp_new.item())
                 n += 1
 
         if n > 0:
             for k in agg:
                 agg[k] /= n
+        agg["advantage_mean"] = float(np.mean(advantages)) if advantages else 0.0
+        agg["advantage_std"]  = float(np.std(advantages))  if advantages else 0.0
+        agg["logprob_std"]    = float(np.std(logprobs))    if logprobs else 0.0
+        agg["reward_mean"]    = float(rewards.mean())
+        agg["reward_std"]     = float(rewards.std())
         return agg
 
 
@@ -423,16 +461,22 @@ class GRPOTrainer:
                 rd = self.reward_fn.compute(ecg_np, class_name, class_idx)
             except Exception:
                 rd = {"total": 0.0, "r_morph": 0.0, "r_hrv": 0.0,
-                      "r_real": 0.0, "r_diag": 0.5}
+                      "r_real": 0.0, "r_diag": 0.5, "r_a3": 0.0}
             reward_dicts.append(rd)
 
         rewards    = torch.tensor([rd["total"] for rd in reward_dicts], device=self.device)
         advantages = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
 
         # ── Policy gradient + KL ───────────────────────────────────────────────
+        # No importance-sampling ratio here (GRPO recomputes lp_new fresh each
+        # call rather than reusing an "old" snapshot), so ratio/clip_fraction
+        # are PPO-only diagnostics — reported as N/A for this algorithm rather
+        # than a fabricated value of 1.0/0.0.
         self.policy.train()
         total_loss = torch.zeros(1, device=self.device)
         total_kl   = torch.zeros(1, device=self.device)
+        policy_loss_sum = 0.0
+        logprobs: list[float] = []
 
         for g in range(self.G):
             lp_new = _score_log_prob(
@@ -443,14 +487,17 @@ class GRPOTrainer:
                 self.policy, self.frozen, x0_list[g], self.diffusion,
                 class_label, self.device, K=self.lp_K,
             )
-            total_loss = total_loss + (-advantages[g] * lp_new + self.kl_beta * kl)
+            pg_term = -advantages[g] * lp_new
+            total_loss = total_loss + (pg_term + self.kl_beta * kl)
             total_kl   = total_kl + kl.detach()
+            policy_loss_sum += pg_term.item()
+            logprobs.append(lp_new.item())
 
         total_loss = total_loss / self.G
 
         self.opt.zero_grad()
         total_loss.backward()
-        nn.utils.clip_grad_norm_(self.policy.parameters(), self.grad_clip)
+        grad_norm = nn.utils.clip_grad_norm_(self.policy.parameters(), self.grad_clip)
         self.opt.step()
         self.ema.update(self.policy)
 
@@ -460,10 +507,21 @@ class GRPOTrainer:
             "r_hrv":   float(np.mean([rd["r_hrv"]   for rd in reward_dicts])),
             "r_real":  float(np.mean([rd["r_real"]  for rd in reward_dicts])),
             "r_diag":  float(np.mean([rd["r_diag"]  for rd in reward_dicts])),
+            "r_a3":    float(np.mean([rd["r_a3"]    for rd in reward_dicts])),
         }
+        adv_np = advantages.detach().cpu().numpy()
         return {
-            "loss":   float(total_loss.item()),
-            "kl":     float(total_kl.item() / self.G),
+            "loss":            float(total_loss.item()),
+            "policy_loss":     policy_loss_sum / self.G,
+            "kl":              float(total_kl.item() / self.G),
+            "ratio":           None,
+            "clip_fraction":   None,
+            "grad_norm":       float(grad_norm),
+            "advantage_mean":  float(adv_np.mean()),
+            "advantage_std":   float(adv_np.std()),
+            "logprob_std":     float(np.std(logprobs)) if logprobs else 0.0,
+            "reward_mean":     float(rewards.mean().item()),
+            "reward_std":      float(rewards.std().item()),
             "reward": mean_rd,
         }
 
@@ -553,12 +611,438 @@ def _make_progress_plot(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Checkpoint evaluation (cheap per-checkpoint monitoring vs. full Phase-4 suite)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@torch.no_grad()
+def _lightweight_checkpoint_eval(
+    policy_model: nn.Module,
+    diffusion:    GaussianDiffusion,
+    reward_fn:    ClinicalReward,
+    class_names:  list[str],
+    cfg,
+    iteration:    int,
+    kl_to_base:   float,
+    results_dir:  Path,
+    device:       str,
+    log,
+    n_per_class:  int = 5,
+) -> dict:
+    """
+    Cheap, every-checkpoint monitoring: frozen TRTR classifier confidence +
+    A3Reward score (both from `reward_fn`, already loaded — no retrain, no
+    subprocess) + KL-to-base (already computed this iteration by the
+    trainer's KL regulariser). Intended to catch plateauing/regression
+    between the coarser full-suite checkpoints without paying the Mentor
+    Classifier's retrain cost.
+
+    `a3_reward_mean` here is THIS reward function's own A3Reward score
+    (Mahalanobis distance to the real per-class A3 reference, mapped through
+    exp(-d/scale)) — a cheap trend signal, not the same thing as the
+    Mahalanobis/Bhattacharyya numbers `mentor_eval/subband_similarity_
+    metrics.py` reports (which need real generated-data comparison via the
+    full-eval path). Do not conflate the two when reading this file.
+    """
+    n_steps    = int(cfg.diffusion.ddim_steps)
+    diag_confs: list[float] = []
+    a3_scores:  list[float] = []
+
+    for ci, cname in enumerate(class_names):
+        class_label = torch.full((n_per_class,), ci, dtype=torch.long, device=device)
+        x0 = _ddim_sample(policy_model, diffusion, class_label, n_steps, cfg, device)
+        for s in range(n_per_class):
+            ecg_np = x0[s].T.cpu().numpy()
+            try:
+                rd = reward_fn.compute(ecg_np, cname, ci)
+                diag_confs.append(rd["r_diag"])
+                a3_scores.append(rd["r_a3"])
+            except Exception:
+                continue
+
+    report = {
+        "iteration":        iteration,
+        "trtr_diag_conf_mean": float(np.mean(diag_confs)) if diag_confs else None,
+        "trtr_diag_conf_std":  float(np.std(diag_confs))  if diag_confs else None,
+        "a3_reward_mean":   float(np.mean(a3_scores)) if a3_scores else None,
+        "a3_reward_std":    float(np.std(a3_scores))  if a3_scores else None,
+        "kl_to_base":       kl_to_base,
+    }
+    out_path = results_dir / f"checkpoint_eval_lightweight_iter{iteration:04d}.json"
+    with open(out_path, "w") as f:
+        json.dump(report, f, indent=2)
+    log.info(
+        f"  [lightweight eval @ {iteration}] "
+        f"trtr_diag_conf={report['trtr_diag_conf_mean']:.3f} "
+        f"a3_reward={report['a3_reward_mean']:.3f} "
+        f"kl_to_base={kl_to_base:.4f} → {out_path.name}"
+    )
+    # Trend-only: appended to checkpoint_metrics.json for visibility, but never
+    # consulted by early stopping or checkpoint selection (see Decisions.md —
+    # those require the independent Mentor Classifier, not this TRTR signal).
+    _append_checkpoint_metrics(results_dir, {"kind": "lightweight", **report})
+    return report
+
+
+def _run_classification_validation_once(
+    ckpt_path: Path, out_dir: Path, seed: int, log,
+) -> Optional[dict]:
+    """One classification_validation.py run → parsed classifier_generated_eval.json, or None."""
+    try:
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "mentor_eval.classification_validation",
+                "--ckpt", str(ckpt_path), "--out-dir", str(out_dir), "--seed", str(seed),
+            ],
+            capture_output=True, text=True, timeout=3600,
+        )
+        if result.returncode != 0:
+            log.warning(
+                f"    classification_validation.py (seed={seed}) exited "
+                f"{result.returncode}: {result.stderr[-2000:]}"
+            )
+            return None
+
+        gen_eval_path = out_dir / "classifier_generated_eval.json"
+        if not gen_eval_path.exists():
+            log.warning(
+                f"    {gen_eval_path} not written (seed={seed}) — Stage 2 was "
+                "likely [BLOCKED] (see stdout)."
+            )
+            return None
+
+        gen_metrics = json.load(open(gen_eval_path))
+        return {
+            "mentor_accuracy": gen_metrics.get("accuracy"),
+            "mentor_macro_f1": gen_metrics.get("macro_f1"),
+            "mentor_excluded_classes": gen_metrics.get("excluded_classes", []),
+            "out_dir": str(out_dir),
+        }
+    except Exception as exc:
+        log.warning(f"    classification_validation.py (seed={seed}) failed to launch: {exc}")
+        return None
+
+
+def _full_checkpoint_eval(
+    ckpt_path: Path, iteration: int, log, n_repeats: int = 1,
+) -> Optional[dict]:
+    """
+    Full Stage-3-equivalent suite: Mentor Classifier retrain + disease-wise
+    metrics, via `mentor_eval.classification_validation` (accepts --ckpt/
+    --out-dir/--seed, so it can be pointed at this specific RL checkpoint
+    without touching the frozen `diffusion_best.pt` baseline). Reserved for
+    the coarse `rl.full_eval_checkpoints` subset — this is a several-GPU-
+    minute retrain, not something to repeat at every lightweight checkpoint.
+
+    n_repeats > 1 (only used at the FIRST full-eval checkpoint, driven by
+    `rl.mentor_stability_check_repeats`) re-runs the whole thing with
+    different seeds — same pattern as the earlier n_seeds=3 baseline run —
+    to measure mentor_macro_f1's own run-to-run spread (Stage 1 retrains the
+    classifier AND Stage 2 regenerates synthetic samples each call, so a
+    single run's number could be noise rather than signal; this project has
+    direct prior evidence of that at n=200 sample scale, see Decisions.md).
+    Reports mentor_macro_f1_std alongside the mean; does NOT compare it
+    against `early_stopping.min_delta` itself — that comparison is logged
+    explicitly at the call site so it isn't silently buried in this return
+    value.
+
+    Returns the Mentor Classifier's metrics on THIS checkpoint's generated
+    ECGs, or None if every run failed/was blocked. This is the metric early
+    stopping and checkpoint selection should use — never the TRTR classifier
+    that IS the training reward signal (see Decisions.md).
+
+    Subband breakdown (`mentor_eval.run_subband_analysis`) and the
+    conditioning diagnostic (`mentor_eval.run_disease_conditioning_analysis`)
+    are NOT wired in here: both hardcode `outputs/models/diffusion_best.pt`
+    with no --ckpt override, so pointing them at an RL checkpoint would
+    require adding that override first (or risk clobbering the baseline
+    checkpoint other tooling depends on). Left as a follow-up rather than
+    faked — see Decisions.md.
+    """
+    base_out_dir = Path("outputs/mentor_review") / f"rl_checkpoint_iter{iteration:04d}"
+    seeds = [42 + i for i in range(max(1, n_repeats))]
+    log.info(
+        f"  [full eval @ {iteration}] launching classification_validation.py "
+        f"--ckpt {ckpt_path} x{len(seeds)} run(s) (this retrains the Mentor "
+        f"Classifier — several GPU-minutes EACH) …"
+    )
+
+    runs: list[dict] = []
+    for i, seed in enumerate(seeds):
+        out_dir = base_out_dir if len(seeds) == 1 else base_out_dir.with_name(
+            f"{base_out_dir.name}_rep{i}"
+        )
+        r = _run_classification_validation_once(ckpt_path, out_dir, seed, log)
+        if r is not None:
+            runs.append(r)
+
+    if not runs:
+        return None
+
+    macro_f1s   = [r["mentor_macro_f1"] for r in runs if r["mentor_macro_f1"] is not None]
+    accuracies  = [r["mentor_accuracy"] for r in runs if r["mentor_accuracy"] is not None]
+    metrics = {
+        "mentor_macro_f1":     float(np.mean(macro_f1s)) if macro_f1s else None,
+        "mentor_macro_f1_std": float(np.std(macro_f1s)) if len(macro_f1s) > 1 else None,
+        "mentor_accuracy":     float(np.mean(accuracies)) if accuracies else None,
+        "mentor_excluded_classes": runs[0].get("mentor_excluded_classes", []),
+        "n_repeats": len(runs),
+        "out_dirs": [r["out_dir"] for r in runs],
+    }
+    log.info(
+        f"  [full eval @ {iteration}] mentor_macro_f1="
+        f"{metrics['mentor_macro_f1']}"
+        + (f" (std={metrics['mentor_macro_f1_std']:.4f} over {len(runs)} runs)"
+           if metrics["mentor_macro_f1_std"] is not None else "")
+        + f" mentor_accuracy={metrics['mentor_accuracy']}"
+    )
+    return metrics
+
+
+def _append_checkpoint_metrics(results_dir: Path, record: dict) -> None:
+    """Append one record to the consolidated, machine-readable checkpoint log."""
+    path = results_dir / "checkpoint_metrics.json"
+    records = json.load(open(path)) if path.exists() else []
+    records.append(record)
+    with open(path, "w") as f:
+        json.dump(records, f, indent=2)
+
+
+def _is_better(value: float, best: Optional[float], mode: str, min_delta: float = 0.0) -> bool:
+    if best is None:
+        return True
+    return (value > best + min_delta) if mode == "max" else (value < best - min_delta)
+
+
+@torch.no_grad()
+def _same_seed_before_after_comparison(
+    frozen_model: nn.Module,
+    policy_model: nn.Module,
+    diffusion:    GaussianDiffusion,
+    class_names:  list[str],
+    reward_fn:    ClinicalReward,
+    cfg,
+    device:       str,
+    log,
+    class_idx:    int = 0,
+) -> dict:
+    """
+    Same latent seed, frozen vs. post-smoke-test policy: if the policy
+    genuinely updated, the two generated ECGs should measurably differ
+    (L2, cosine, and A3-reward delta) — a numeric version of the visual
+    frozen-vs-policy progress plot, not a replacement for it.
+    """
+    n_steps = int(cfg.diffusion.ddim_steps)
+    class_label = torch.full((1,), class_idx, dtype=torch.long, device=device)
+    cname = class_names[class_idx]
+
+    torch.manual_seed(1234)
+    x0_frozen = _ddim_sample(frozen_model, diffusion, class_label, n_steps, cfg, device)
+    torch.manual_seed(1234)
+    x0_policy = _ddim_sample(policy_model, diffusion, class_label, n_steps, cfg, device)
+
+    a = x0_frozen.flatten().cpu().numpy()
+    b = x0_policy.flatten().cpu().numpy()
+    l2 = float(np.linalg.norm(a - b))
+    cosine = float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8))
+
+    ecg_frozen = x0_frozen.squeeze(0).T.cpu().numpy()
+    ecg_policy = x0_policy.squeeze(0).T.cpu().numpy()
+    try:
+        r_frozen = reward_fn.compute(ecg_frozen, cname, class_idx)
+        r_policy = reward_fn.compute(ecg_policy, cname, class_idx)
+    except Exception:
+        r_frozen = r_policy = {"total": None}
+
+    result = {
+        "class": cname,
+        "l2_distance": l2,
+        "cosine_similarity": cosine,
+        "reward_frozen": r_frozen.get("total"),
+        "reward_policy": r_policy.get("total"),
+        "samples_measurably_differ": l2 > 1e-4,
+    }
+    log.info(
+        f"  [same-seed before/after] class={cname} l2={l2:.4f} "
+        f"cosine={cosine:.5f} reward_frozen={r_frozen.get('total')} "
+        f"reward_policy={r_policy.get('total')}"
+    )
+    if not result["samples_measurably_differ"]:
+        log.warning(
+            "  ⚠ Same-seed frozen vs. policy samples are numerically "
+            "identical (l2 ~ 0) — the policy did not change what it "
+            "generates. Consistent with a dead policy-gradient update."
+        )
+    return result
+
+
+def _plot_smoke_test_diagnostics(
+    kl_history: list[float], reward_history: list[float],
+    grad_norm_history: list[float], results_dir: Path, log,
+) -> None:
+    """Stacked KL / reward / grad_norm-vs-iteration plot for the smoke test."""
+    n = len(kl_history)
+    if n == 0:
+        return
+    x = list(range(1, n + 1))
+    with plt.rc_context(PUBSTYLE):
+        fig, axes = plt.subplots(3, 1, figsize=(6, 7), sharex=True, constrained_layout=True)
+        axes[0].plot(x, kl_history, marker="o", color="#d62728")
+        axes[0].set_ylabel("KL")
+        axes[1].plot(x, reward_history, marker="o", color="#2ca02c")
+        axes[1].set_ylabel("reward_total")
+        axes[2].plot(x, grad_norm_history, marker="o", color="#1f77b4")
+        axes[2].set_ylabel("grad_norm")
+        axes[2].set_xlabel("smoke-test iteration")
+        fig.suptitle("Smoke Test Diagnostics", fontsize=11)
+    out = results_dir / "smoke_test_diagnostics.png"
+    fig.savefig(str(out), dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    log.info(f"  Diagnostics plot → {out.name}")
+
+
+def _report_smoke_test_results(
+    policy_model: nn.Module,
+    frozen_model: nn.Module,
+    diffusion:    GaussianDiffusion,
+    class_names:  list[str],
+    cfg,
+    device:       str,
+    checksum_before: float,
+    kl_history:     list[float],
+    reward_history: list[float],
+    grad_norm_history: list[float],
+    reward_fn:      ClinicalReward,
+    results_dir:    Path,
+    log,
+) -> dict:
+    """
+    Explicit pass/warn checks for the failure mode this smoke test exists to
+    catch: a policy-gradient wiring bug that runs without crashing but never
+    actually updates the policy. Every check here is a documented, measurable
+    condition — not a subjective "looks fine" read of a training curve.
+    """
+    checksum_after = float(sum(p.data.sum().item() for p in policy_model.parameters()))
+    params_changed = abs(checksum_after - checksum_before) > 1e-8
+
+    n = len(kl_history)
+    half = max(1, n // 2)
+    kl_nonzero      = any(k > 1e-6 for k in kl_history)
+    grad_never_zero = all(g > 1e-10 for g in grad_norm_history) if grad_norm_history else False
+    reward_first_half  = float(np.mean(reward_history[:half])) if reward_history else None
+    reward_second_half = float(np.mean(reward_history[half:])) if reward_history[half:] else None
+    reward_trend_up = (
+        reward_second_half is not None and reward_first_half is not None
+        and reward_second_half >= reward_first_half
+    )
+
+    same_seed = _same_seed_before_after_comparison(
+        frozen_model, policy_model, diffusion, class_names, reward_fn, cfg, device, log,
+    )
+
+    checks = {
+        "policy_params_changed": params_changed,
+        "kl_nonzero_at_some_point": kl_nonzero,
+        "grad_norm_never_zero": grad_never_zero,
+        "reward_did_not_degrade_first_vs_second_half": reward_trend_up,
+        "same_seed_samples_measurably_differ": same_seed["samples_measurably_differ"],
+    }
+    all_pass = all(checks.values())
+
+    timing = reward_fn.get_timing_summary()
+    _plot_smoke_test_diagnostics(kl_history, reward_history, grad_norm_history, results_dir, log)
+
+    report = {
+        "n_iterations":        n,
+        "checksum_before":     checksum_before,
+        "checksum_after":      checksum_after,
+        "kl_history":          kl_history,
+        "reward_history":      reward_history,
+        "grad_norm_history":   grad_norm_history,
+        "reward_first_half":   reward_first_half,
+        "reward_second_half":  reward_second_half,
+        "reward_component_latency_ms": timing,
+        "same_seed_before_after": same_seed,
+        "checks":              checks,
+        "all_checks_passed":   all_pass,
+    }
+    out_path = results_dir / "smoke_test_report.json"
+    with open(out_path, "w") as f:
+        json.dump(report, f, indent=2)
+
+    # baseline_reward.json — nice-to-have for later delta reporting against a
+    # real training run, not blocking anything here.
+    if reward_history:
+        baseline_path = results_dir / "baseline_reward.json"
+        with open(baseline_path, "w") as f:
+            json.dump({
+                "reward_total_iter1": reward_history[0],
+                "reward_component_latency_ms": timing,
+            }, f, indent=2)
+
+    log.info("=" * 60)
+    log.info("SMOKE TEST RESULTS")
+    log.info("=" * 60)
+    for name, passed in checks.items():
+        log.info(f"  [{'PASS' if passed else 'FAIL'}] {name}")
+    log.info(
+        f"  reward: first-half mean={reward_first_half} → "
+        f"second-half mean={reward_second_half}"
+    )
+    log.info("  reward-component latency (ms/ECG, mean):")
+    for comp, stats in timing.items():
+        log.info(f"    {comp}: {stats['mean_ms']}")
+    log.info(
+        "  reward_a3 IS included in the timing above (a3 row) — implemented "
+        "and wired into the composite reward as of this smoke test. This "
+        "does NOT numerically validate reward_a3 against Stage 3's subband "
+        "metrics; run validate_a3_reward.py separately for that (see "
+        "Decisions.md — Stage3_Subband_Master_Comparison.md has no real "
+        "numbers to compare against yet, 0/72 rows evaluated)."
+    )
+    a3_stats = timing.get("a3", {})
+    if a3_stats.get("mean_ms") and timing.get("total", {}).get("mean_ms"):
+        a3_pct = 100.0 * a3_stats["mean_ms"] / timing["total"]["mean_ms"]
+        log.info(f"  a3 is {a3_pct:.1f}% of total reward-computation latency.")
+        if a3_pct > 50.0:
+            log.warning(
+                f"  ⚠ a3 accounts for {a3_pct:.1f}% of reward latency — it "
+                "may be the PPO rollout bottleneck. Do not optimize "
+                "prematurely, but document this before a long GPU run."
+            )
+    if all_pass:
+        log.info("✓ All smoke-test checks passed. Policy is updating under RL.")
+    else:
+        log.warning(
+            "⚠ One or more smoke-test checks FAILED. Do not proceed to a real "
+            "GPU run until this is diagnosed — a documented failure mode in "
+            "diffusion-RL is a policy-gradient loop that runs without "
+            "crashing but never actually updates the policy."
+        )
+    log.info(f"Report → {out_path}")
+    return report
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Training loop
 # ──────────────────────────────────────────────────────────────────────────────
 
-def train(cfg, log) -> float:
+def train(cfg, log, smoke_test: bool = False) -> float:
+    """
+    smoke_test=True runs a short (`rl.smoke_test_iterations`, default 10)
+    correctness check instead of the full schedule: does the policy actually
+    change under PPO/GRPO before any GPU-hours are committed to a real run?
+    Skips periodic checkpointing and the eval-checkpoint schedule (nothing
+    to select/stop on in 10 iterations); collects parameter-checksum,
+    KL/reward trend, grad_norm, and reward-latency diagnostics and writes
+    them to outputs/results/smoke_test_report.json.
+    """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     log.info(f"Device: {device}")
+    if smoke_test:
+        log.info("=" * 60)
+        log.info("SMOKE TEST MODE — short run to verify PPO/GRPO wiring, "
+                  "not a real training run.")
+        log.info("=" * 60)
 
     # ── Directories ──────────────────────────────────────────────────────────
     processed_dir = Path(cfg.paths.outputs.processed)
@@ -657,7 +1141,9 @@ def train(cfg, log) -> float:
 
     n_rollouts   = int(rl.n_rollouts)
     n_ppo_epochs = int(rl.n_ppo_epochs)
-    n_iterations = int(rl.rl_iterations)
+    n_iterations = (
+        int(rl.get("smoke_test_iterations", 10)) if smoke_test else int(rl.rl_iterations)
+    )
 
     # ── CSV log ───────────────────────────────────────────────────────────────
     log_path = logs_dir / "rl_training_log.csv"
@@ -665,10 +1151,61 @@ def train(cfg, log) -> float:
     csv_w    = csv.writer(log_fh)
     csv_w.writerow([
         "iter", "class",
-        "reward_total", "r_morph", "r_hrv", "r_real", "r_diag",
+        "reward_total", "r_morph", "r_hrv", "r_real", "r_diag", "r_a3",
+        "contrib_morph", "contrib_hrv", "contrib_real", "contrib_diag", "contrib_a3",
         "kl", "loss", "lr",
+        # Standard PPO/GRPO diagnostics. ratio/clip_fraction are PPO-only
+        # (importance-sampling artifacts) — blank for GRPO, not 0/1.
+        "policy_loss", "ratio", "clip_fraction", "grad_norm",
+        "advantage_mean", "advantage_std", "logprob_std",
+        "reward_mean", "reward_std",
     ])
     log_fh.flush()
+
+    # Weighted contribution = weight * raw component score, i.e. how much of
+    # `reward_total` each term is actually responsible for at this iteration
+    # (not just its configured weight). Logged per the Stage 4 decision to
+    # measure real per-term contribution before revisiting reward weights.
+    reward_weights = reward_fn.weights
+
+    # Checkpoint eval schedule (see config.yaml rl.eval_checkpoints /
+    # rl.full_eval_checkpoints): lightweight eval is cheap and runs at every
+    # entry; the full Mentor-Classifier-retrain suite only runs at the coarser
+    # full_eval_checkpoints subset to avoid paying that multi-minute retrain
+    # cost repeatedly.
+    eval_checkpoints      = set() if smoke_test else set(int(x) for x in rl.get("eval_checkpoints", []))
+    full_eval_checkpoints = set() if smoke_test else set(int(x) for x in rl.get("full_eval_checkpoints", []))
+
+    # ── Smoke-test diagnostics ───────────────────────────────────────────────
+    smoke_kl_history:        list[float] = []
+    smoke_reward_history:    list[float] = []
+    smoke_grad_norm_history: list[float] = []
+    smoke_param_checksum_before = float(
+        sum(p.data.sum().item() for p in policy_model.parameters())
+    ) if smoke_test else None
+
+    # Checkpoint selection + early stopping: BOTH gated on full-eval (Mentor
+    # Classifier) checkpoints only. Never on TRTR-based lightweight
+    # checkpoints — TRTR is the training reward signal itself, so stopping or
+    # selecting on it would just reconfirm training-reward convergence, not
+    # generalisable quality. See config.yaml rl.early_stopping /
+    # rl.checkpoint_selection and Decisions.md.
+    sel_cfg          = rl.get("checkpoint_selection", {})
+    sel_metric_name  = str(sel_cfg.get("metric", "mentor_macro_f1"))
+    sel_mode         = str(sel_cfg.get("mode", "max"))
+    best_selected_metric: Optional[float] = None
+
+    es_cfg        = rl.get("early_stopping", {})
+    es_enabled    = bool(es_cfg.get("enabled", False))
+    es_metric     = str(es_cfg.get("metric", "mentor_macro_f1"))
+    es_mode       = str(es_cfg.get("mode", "max"))
+    es_patience   = int(es_cfg.get("patience", 2))
+    es_min_delta  = float(es_cfg.get("min_delta", 0.0))
+    es_best: Optional[float] = None
+    es_bad_count  = 0
+    stop_early    = False
+    first_full_eval_done = False
+    mentor_stability_repeats = int(rl.get("mentor_stability_check_repeats", 3))
 
     # ── Safety alarm state ────────────────────────────────────────────────────
     morph_low_count = 0
@@ -695,6 +1232,7 @@ def train(cfg, log) -> float:
                 "r_hrv":   float(np.mean([ro["reward"]["r_hrv"]   for ro in rollouts])),
                 "r_real":  float(np.mean([ro["reward"]["r_real"]  for ro in rollouts])),
                 "r_diag":  float(np.mean([ro["reward"]["r_diag"]  for ro in rollouts])),
+                "r_a3":    float(np.mean([ro["reward"]["r_a3"]    for ro in rollouts])),
             }
             kl   = update["kl"]
             loss = update["loss"]
@@ -704,6 +1242,29 @@ def train(cfg, log) -> float:
             kl      = update["kl"]
             loss    = update["loss"]
 
+        diag = {
+            "policy_loss":    update.get("policy_loss", 0.0),
+            "ratio":          update.get("ratio"),           # None for GRPO
+            "clip_fraction":  update.get("clip_fraction"),   # None for GRPO
+            "grad_norm":      update.get("grad_norm", 0.0),
+            "advantage_mean": update.get("advantage_mean", 0.0),
+            "advantage_std":  update.get("advantage_std", 0.0),
+            "logprob_std":    update.get("logprob_std", 0.0),
+            "reward_mean":    update.get("reward_mean", mean_rd["total"]),
+            "reward_std":     update.get("reward_std", 0.0),
+        }
+
+        if smoke_test:
+            smoke_kl_history.append(kl)
+            smoke_reward_history.append(mean_rd["total"])
+            smoke_grad_norm_history.append(diag["grad_norm"])
+
+        # ── Reward-contribution logging ─────────────────────────────────────────
+        contrib = {
+            k: reward_weights.get(k, 0.0) * mean_rd[f"r_{k}"]
+            for k in ("morph", "hrv", "real", "diag", "a3")
+        }
+
         # ── CSV log ───────────────────────────────────────────────────────────
         csv_w.writerow([
             it, class_name,
@@ -712,22 +1273,62 @@ def train(cfg, log) -> float:
             f"{mean_rd['r_hrv']:.5f}",
             f"{mean_rd['r_real']:.5f}",
             f"{mean_rd['r_diag']:.5f}",
+            f"{mean_rd['r_a3']:.5f}",
+            f"{contrib['morph']:.5f}",
+            f"{contrib['hrv']:.5f}",
+            f"{contrib['real']:.5f}",
+            f"{contrib['diag']:.5f}",
+            f"{contrib['a3']:.5f}",
             f"{kl:.5f}",
             f"{loss:.5f}",
             f"{current_lr:.2e}",
+            f"{diag['policy_loss']:.5f}",
+            "" if diag["ratio"] is None else f"{diag['ratio']:.5f}",
+            "" if diag["clip_fraction"] is None else f"{diag['clip_fraction']:.5f}",
+            f"{diag['grad_norm']:.5f}",
+            f"{diag['advantage_mean']:.5f}",
+            f"{diag['advantage_std']:.5f}",
+            f"{diag['logprob_std']:.5f}",
+            f"{diag['reward_mean']:.5f}",
+            f"{diag['reward_std']:.5f}",
         ])
         log_fh.flush()
 
         if it == 1 or it % 5 == 0:
+            total_contrib = sum(contrib.values()) + 1e-8
             log.info(
                 f"[{it:04d}/{n_iterations}] class={class_name} | "
                 f"r={mean_rd['total']:.4f} "
                 f"(morph={mean_rd['r_morph']:.3f} "
                 f"hrv={mean_rd['r_hrv']:.3f} "
                 f"real={mean_rd['r_real']:.3f} "
-                f"diag={mean_rd['r_diag']:.3f}) | "
+                f"diag={mean_rd['r_diag']:.3f} "
+                f"a3={mean_rd['r_a3']:.3f}) | "
                 f"kl={kl:.4f} | loss={loss:.5f} | lr={current_lr:.1e}"
             )
+            log.info(
+                "  contribution% "
+                + " ".join(
+                    f"{k}={100*v/total_contrib:.1f}%" for k, v in contrib.items()
+                )
+            )
+            ratio_str = "n/a" if diag["ratio"] is None else f"{diag['ratio']:.3f}"
+            clipf_str = "n/a" if diag["clip_fraction"] is None else f"{diag['clip_fraction']:.3f}"
+            log.info(
+                f"  diagnostics policy_loss={diag['policy_loss']:.4f} "
+                f"ratio={ratio_str} clip_frac={clipf_str} "
+                f"grad_norm={diag['grad_norm']:.4f} "
+                f"adv={diag['advantage_mean']:.3f}±{diag['advantage_std']:.3f} "
+                f"logprob_std={diag['logprob_std']:.3f} "
+                f"reward={diag['reward_mean']:.3f}±{diag['reward_std']:.3f}"
+            )
+            if diag["grad_norm"] == 0.0:
+                log.warning(
+                    "  ⚠ grad_norm=0.0 — gradients are not flowing to the "
+                    "policy. This is the failure mode the smoke test "
+                    "(run_ppo_smoke_test) is meant to catch before a real "
+                    "GPU run; do not proceed on this run without diagnosing it."
+                )
 
         # ── Safety alarm: KL divergence ───────────────────────────────────────
         if kl > KL_THRESH:
@@ -760,8 +1361,8 @@ def train(cfg, log) -> float:
         else:
             morph_low_count = 0
 
-        # ── Best model ────────────────────────────────────────────────────────
-        if mean_rd["total"] > best_reward:
+        # ── Best model (skipped in smoke-test mode — don't clobber a real best) ─
+        if not smoke_test and mean_rd["total"] > best_reward:
             best_reward = mean_rd["total"]
             torch.save(
                 {
@@ -783,22 +1384,135 @@ def train(cfg, log) -> float:
                 class_names, cfg, it, results_dir, device, log,
             )
 
-        # ── Checkpoint ────────────────────────────────────────────────────────
-        if it % int(rl.save_every_iters) == 0:
-            torch.save(
-                {
-                    "iter":        it,
-                    "model":       policy_model.state_dict(),
-                    "ema_shadow":  ema.shadow,
-                    "opt":         opt.state_dict(),
-                    "best_reward": best_reward,
-                    "class_names": class_names,
-                    "n_classes":   n_classes,
-                    "current_lr":  current_lr,
-                },
-                str(models_dir / f"rl_ckpt_iter{it:04d}.pt"),
+        # ── Checkpoint (skipped in smoke-test mode — nothing worth keeping) ────
+        need_eval_ckpt = it in eval_checkpoints or it in full_eval_checkpoints
+        if not smoke_test and (it % int(rl.save_every_iters) == 0 or need_eval_ckpt):
+            ckpt_path = models_dir / f"rl_ckpt_iter{it:04d}.pt"
+            if not ckpt_path.exists() or it % int(rl.save_every_iters) == 0:
+                torch.save(
+                    {
+                        "iter":        it,
+                        "model":       policy_model.state_dict(),
+                        "ema_shadow":  ema.shadow,
+                        "opt":         opt.state_dict(),
+                        "best_reward": best_reward,
+                        "class_names": class_names,
+                        "n_classes":   n_classes,
+                        "current_lr":  current_lr,
+                    },
+                    str(ckpt_path),
+                )
+                log.info(f"Checkpoint → rl_ckpt_iter{it:04d}.pt")
+
+        # ── Lightweight checkpoint eval ─────────────────────────────────────────
+        if it in eval_checkpoints:
+            _lightweight_checkpoint_eval(
+                policy_model, diffusion, reward_fn, class_names, cfg,
+                it, kl, results_dir, device, log,
             )
-            log.info(f"Checkpoint → rl_ckpt_iter{it:04d}.pt")
+
+        # ── Full Stage-3-equivalent checkpoint eval ─────────────────────────────
+        if it in full_eval_checkpoints:
+            ckpt_path_full = models_dir / f"rl_ckpt_iter{it:04d}.pt"
+
+            # First full-eval checkpoint only: repeat the Mentor Classifier
+            # eval `mentor_stability_check_repeats` times (different seeds) to
+            # measure mentor_macro_f1's own run-to-run spread before trusting
+            # a single reading for early-stop/selection decisions. See
+            # Decisions.md — this project already has direct evidence
+            # (S3-002's n=200 accuracy discrepancy) that small-sample
+            # generated-data metrics can be noisy run-to-run.
+            n_repeats = 1 if first_full_eval_done else mentor_stability_repeats
+            full_metrics = _full_checkpoint_eval(ckpt_path_full, it, log, n_repeats=n_repeats)
+
+            if not first_full_eval_done and full_metrics is not None:
+                std = full_metrics.get("mentor_macro_f1_std")
+                if std is not None:
+                    log.info(
+                        f"  [mentor stability check] mentor_macro_f1 spread over "
+                        f"{full_metrics['n_repeats']} runs: std={std:.4f} "
+                        f"(configured early_stopping.min_delta={es_min_delta})"
+                    )
+                    if std >= es_min_delta:
+                        log.warning(
+                            f"  ⚠ mentor_macro_f1's run-to-run std ({std:.4f}) is >= "
+                            f"the configured min_delta ({es_min_delta:.4f}). This "
+                            "metric cannot currently distinguish real improvement "
+                            "from sampling noise for early stopping / checkpoint "
+                            "selection at this checkpoint count. Widen min_delta or "
+                            "increase classification_validation.py's samples/class "
+                            "before trusting a stop/selection decision from a single "
+                            "reading — do not proceed on this as just a caveat."
+                        )
+                    else:
+                        log.info(
+                            "  ✓ mentor_macro_f1 spread is below min_delta — "
+                            "single-reading decisions at later full-eval "
+                            "checkpoints are meaningful relative to this threshold."
+                        )
+                else:
+                    log.warning(
+                        "  [mentor stability check] could not compute std "
+                        f"(only {full_metrics.get('n_repeats', 0)} successful run(s) "
+                        "out of the requested repeats) — stability unverified."
+                    )
+                first_full_eval_done = True
+
+            if full_metrics is not None:
+                _append_checkpoint_metrics(
+                    results_dir, {"iteration": it, "kind": "full", **full_metrics}
+                )
+
+                # ── Checkpoint selection (heavy metric only) ────────────────────
+                sel_val = full_metrics.get(sel_metric_name)
+                if sel_val is not None and _is_better(sel_val, best_selected_metric, sel_mode):
+                    best_selected_metric = sel_val
+                    sel_ckpt_path = models_dir / "diffusion_rl_selected.pt"
+                    shutil.copy(str(ckpt_path_full), str(sel_ckpt_path))
+                    log.info(
+                        f"  ✓ New selected checkpoint (by {sel_metric_name}="
+                        f"{sel_val:.4f}) → {sel_ckpt_path.name}"
+                    )
+                elif sel_val is None:
+                    log.warning(
+                        f"  checkpoint_selection metric {sel_metric_name!r} not found "
+                        f"in full-eval metrics {list(full_metrics)} — skipping selection "
+                        f"at iteration {it}."
+                    )
+
+                # ── Early stopping (heavy metric only) ──────────────────────────
+                if es_enabled:
+                    es_val = full_metrics.get(es_metric)
+                    if es_val is None:
+                        log.warning(
+                            f"  early_stopping metric {es_metric!r} not found in "
+                            f"full-eval metrics — cannot evaluate stop condition "
+                            f"at iteration {it}."
+                        )
+                    elif _is_better(es_val, es_best, es_mode, min_delta=es_min_delta):
+                        es_best = es_val
+                        es_bad_count = 0
+                    else:
+                        es_bad_count += 1
+                        log.info(
+                            f"  early_stopping: no improvement in {es_metric} "
+                            f"({es_bad_count}/{es_patience} full-eval checkpoints)"
+                        )
+                        if es_bad_count >= es_patience:
+                            log.warning(
+                                f"  ⚠ Early stopping triggered at iteration {it}: "
+                                f"{es_metric} has not improved for {es_patience} "
+                                f"consecutive full-eval checkpoints."
+                            )
+                            stop_early = True
+            else:
+                log.warning(
+                    f"  Full eval at iteration {it} produced no metrics — "
+                    "checkpoint selection and early stopping skipped for this checkpoint."
+                )
+
+        if stop_early:
+            break
 
     log_fh.close()
 
@@ -817,6 +1531,14 @@ def train(cfg, log) -> float:
         f"(checksum Δ = {delta:.2e})"
     )
 
+    if smoke_test:
+        _report_smoke_test_results(
+            policy_model, frozen_model, diffusion, class_names, cfg, device,
+            smoke_param_checksum_before,
+            smoke_kl_history, smoke_reward_history, smoke_grad_norm_history,
+            reward_fn, results_dir, log,
+        )
+
     return best_reward
 
 
@@ -825,12 +1547,26 @@ def train(cfg, log) -> float:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser(description="RL fine-tuning of the ECG diffusion model.")
+    parser.add_argument(
+        "--smoke-test", action="store_true",
+        help="Run a short (rl.smoke_test_iterations) correctness check instead "
+             "of the full training schedule — verifies the policy actually "
+             "updates under PPO/GRPO before committing GPU-hours to a real run. "
+             "See outputs/results/smoke_test_report.json for the result.",
+    )
+    args = parser.parse_args()
+
     cfg = load_config()
     log = get_logger("step07_rl_finetuning", cfg=cfg)
     set_seed(int(cfg.seeds[0]))
 
-    best_reward = train(cfg, log)
-    print(f"✓ RL fine-tuning complete. Best total reward: {best_reward:.3f}")
+    best_reward = train(cfg, log, smoke_test=args.smoke_test)
+    if args.smoke_test:
+        print("✓ Smoke test complete — see outputs/results/smoke_test_report.json")
+    else:
+        print(f"✓ RL fine-tuning complete. Best total reward: {best_reward:.3f}")
 
 
 if __name__ == "__main__":
