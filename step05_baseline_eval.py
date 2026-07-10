@@ -1071,10 +1071,10 @@ def evaluate(cfg, log) -> float:
     log.info("Computing TRTR baseline (train on real, test on real) …")
     log.info("=" * 60)
     trtr_cache: dict = {}
-    _train_eval_cnn(X_train, y_train, X_test, y_test, n_classes, cfg, device, "TRTR", log)
-    # Re-run properly to fill cache
+    trtr_save = Path(cfg.paths.outputs.models) / "trtr_classifier.pt"
     trtr_result = _train_eval_cnn(
-        X_train, y_train, X_test, y_test, n_classes, cfg, device, "TRTR", log
+        X_train, y_train, X_test, y_test, n_classes, cfg, device, "TRTR", log,
+        save_path=trtr_save if not trtr_save.exists() else None,
     )
     trtr_cache.update(trtr_result)
 
