@@ -1155,3 +1155,30 @@ lower on average. Recommend lightweight per-class `r_diag` monitoring
 Stage 4 RL fine-tuning run, so if this HYP pattern recurs at the full
 iteration count it's caught from the training log directly rather than
 requiring a post-hoc CSV dive like this one.
+
+## Stage 4 (`stage4_finetune_v1`, 1000 iterations) — pre-registered success criteria
+
+Pre-registered before result inspection, 2026-07-10.
+
+**Success**:
+- Class-adjusted reward delta (same method as Gate 3 diagnostic) is
+  positive and at least comparable to Gate 3's +0.0409 over a
+  proportional iteration window (i.e. not just positive by a negligible
+  margin).
+- No class shows an unrecovered near-zero `r_diag` stretch lasting more
+  than ~30 consecutive iterations without returning to that class's
+  baseline mean.
+- KL stays within the same order of magnitude observed in Gate 3
+  (roughly 0.003-0.06 range) — no sustained runaway growth.
+
+**Marginal**:
+- Reward trend flat or mixed sign across classes, but no divergence.
+- One or more classes show instability similar to HYP's Gate 3 pattern,
+  but self-correct within the run.
+
+**Failure**:
+- Class-adjusted reward trend is negative.
+- KL diverges (sustained growth beyond ~10x the Gate 3 baseline range) or
+  `clip_fraction` stays elevated for extended stretches.
+- Any class collapses (`r_diag` near zero) and does not recover by run's
+  end.
