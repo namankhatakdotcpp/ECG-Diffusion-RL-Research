@@ -1286,6 +1286,9 @@ def train(
     MORPH_THRESH    = 0.3
     KL_THRESH       = 1.0
 
+    # ── Per-class r_diag monitoring (observational only) ─────────────────────
+    per_class_rdiag: dict[str, list] = {c: [] for c in class_names}
+
     # ── Training ──────────────────────────────────────────────────────────────
     best_reward = -float("inf")
     rng = np.random.default_rng(int(cfg.seeds[0]))
@@ -1434,6 +1437,17 @@ def train(
                 morph_low_count = 0   # reset to avoid flooding disk
         else:
             morph_low_count = 0
+
+        # ── Per-class r_diag monitoring (observational only) ────────────────────
+        per_class_rdiag[class_name].append(mean_rd["r_diag"])
+        if it % int(rl.save_every_iters) == 0:
+            for cname, vals in per_class_rdiag.items():
+                if vals:
+                    log.info(
+                        f"  r_diag[{cname}] mean={np.mean(vals):.3f} "
+                        f"min={np.min(vals):.3f} max={np.max(vals):.3f} (n={len(vals)})"
+                    )
+                    vals.clear()
 
         # ── Best model (skipped in smoke-test mode — don't clobber a real best) ─
         if not smoke_test and mean_rd["total"] > best_reward:
