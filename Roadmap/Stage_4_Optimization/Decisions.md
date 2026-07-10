@@ -1182,3 +1182,36 @@ Pre-registered before result inspection, 2026-07-10.
   `clip_fraction` stays elevated for extended stretches.
 - Any class collapses (`r_diag` near zero) and does not recover by run's
   end.
+
+## `stage4_finetune_v1` (1000 iterations) — result vs. pre-registered criteria: FAILURE
+
+- HYP and OTHER classes show `r_diag` collapse to near-zero in the second
+  half of training (HYP: first-half mean 0.252 -> second-half mean 0.060;
+  OTHER: first-half mean 0.343 -> second-half mean 0.028), with no
+  recovery in the final 10 occurrences of either class:
+  - HYP last-10: `[0.0033, 0.0019, 0.0021, 0.114, 0.062, 0.081, 0.0016, 0.157, 0.037, 0.00001]`
+  - OTHER last-10: `[0.019, 0.0056, 0.0082, 0.011, 0.015, 0.0092, 0.012, 0.0005, 0.0021, 0.0041]`
+- This differs from the Gate 3 HYP anomaly (iter 166-215), which fully
+  recovered to baseline by run's end — this collapse does not recover.
+  HYP shows brief small bumps (0.11, 0.157) but falls back to near-zero
+  each time; OTHER never bumps at all, staying uniformly near-zero for
+  its entire last-10 window.
+- Per the pre-registered criteria above (dated 2026-07-10), this matches
+  the FAILURE condition: "any class collapses and does not recover by
+  run's end."
+- NORM and MI were flat; CD and STTC improved.
+- The mentor-classifier checkpoint-selection metric (`mentor_macro_f1`)
+  was independently flagged by the run itself as too noisy
+  (`std=0.0522 >= min_delta=0.0100`) to trust for checkpoint selection at
+  this sample count — so `diffusion_rl_selected.pt` should not yet be
+  treated as validated.
+- Renamed the selected checkpoint to
+  `diffusion_rl_selected_UNVALIDATED.pt` pending investigation.
+
+**Next**: correlate the HYP/OTHER collapse windows against `kl` and
+`grad_norm` in `rl_training_log.csv` to determine whether this is a
+training-instability-driven collapse (like Gate 3's iter=13 episode) or
+a stable-but-stuck classifier-reliability issue (like Gate 3's iter
+166-215 episode) before deciding whether to retrain, reweight the reward
+function, or investigate the TRTR classifier further. Do not launch a
+longer/production run until this is resolved.
