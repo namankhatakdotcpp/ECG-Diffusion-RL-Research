@@ -788,18 +788,17 @@ def _metric_tstr_trtr(
     # treated as final, same evidentiary bar as the Mentor Classifier's own
     # reported accuracy/macro-F1.
     trtr_eval_path = Path(cfg.paths.outputs.models) / "trtr_classifier_eval.json"
-    if not trtr_eval_path.exists():
-        import json as _json
-        trtr_eval_path.write_text(_json.dumps(
-            {"accuracy": trtr.get("accuracy"), "macro_f1": trtr.get("macro_f1"),
-             "per_class_f1": trtr.get("per_class_f1")}, indent=2
-        ))
-        if log:
-            log.info(
-                f"  TRTR classifier (real-data, for RL reward use): "
-                f"accuracy={trtr.get('accuracy')}  macro_f1={trtr.get('macro_f1')} "
-                f"-- saved {trtr_save.name}, eval written to {trtr_eval_path.name}"
-            )
+    import json as _json
+    trtr_eval_path.write_text(_json.dumps(
+        {"accuracy": trtr.get("accuracy"), "macro_f1": trtr.get("macro_f1"),
+         "per_class_f1": trtr.get("per_class_f1")}, indent=2
+    ))
+    if log:
+        log.info(
+            f"  TRTR classifier (real-data, for RL reward use): "
+            f"accuracy={trtr.get('accuracy')}  macro_f1={trtr.get('macro_f1')} "
+            f"-- saved {trtr_save.name}, eval written to {trtr_eval_path.name}"
+        )
 
     return tstr, trtr
 
