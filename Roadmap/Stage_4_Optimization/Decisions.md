@@ -1052,3 +1052,64 @@ training. **Recommend a short calibration run first**
 time it directly) rather than committing to the full 250 on an
 extrapolated estimate — cheap (same cost as the smoke test) and turns
 this range into a real number specific to `himtenduh`.
+
+## `trtr_classifier.pt` never saved / `per_class_f1` missing from eval JSON — both fixed, root cause confirmed from source
+
+`outputs/models/trtr_classifier_eval.json` had real `accuracy`/`macro_f1`
+values but no `.pt` file and no `per_class_f1` key — meaning
+`DiagnosticUtilityReward`'s per-class reliability scaling (see the
+"Diagnostic weight" entry above) has been silently falling back to
+uniform `reliability=1.0` against every TRTR eval produced so far, not
+because the mechanism is broken, but because the file it reads has never
+had the field.
+
+**Root cause, read directly from `step05_baseline_eval.py`, not
+guessed**: `_train_eval_cnn`'s save logic (lines 724-726: `if save_path is
+not None: mkdir + torch.save`) is correct and unconditional — ruled out as
+the bug by reading the full function body. The actual cause was in the
+pre-seed-loop "Cache TRTR result" block (`evaluate()`, ~line 1073): it
+called `_train_eval_cnn` TWICE with no `save_path` at all — the first
+call's result was discarded entirely (wasted a full training run), the
+second populated `trtr_cache["macro_f1"]` with real numbers but still
+never saved a model. Because `trtr_cache` is fully populated BEFORE the
+seed loop starts, `_metric_tstr_trtr`'s cache-hit branch fires on every
+seed inside the loop too, so its own save-capable `else` branch never
+executes either — not a cross-process stale cache (a fresh `{}` every
+run, confirmed), but an in-run pre-warm that permanently starves the one
+branch capable of saving.
+
+**Fixed, two atomic commits**:
+- `5b628ff`: drops the wasted duplicate call, passes
+  `save_path=trtr_save if not trtr_save.exists() else None` to the
+  remaining pre-loop call (same "save once" convention `tstr_save` already
+  used above it).
+- `e57a296`: adds `per_class_f1` to the JSON write — `_train_eval_cnn`
+  already computed and returned it (line 728); the write call simply
+  discarded it.
+
+**Left as-is, explicitly, not silently pruned**: `_metric_tstr_trtr`'s
+`else` branch is now dead code for this specific caller's pattern, but
+`trtr_cache: Optional[dict] = None` in its signature means the function
+is a general utility that could be called without a pre-warmed cache by
+something else — removing the branch would couple it to one caller for no
+benefit. Decision: leave it.
+
+**Known follow-up, NOT fixed (flagged, scoped out deliberately)**: the
+JSON write's guard (`if not trtr_eval_path.exists()`) is decoupled from
+whether training actually just happened — it only checks "does the file
+already exist," independent of whether `trtr` came from a live run or
+(structurally, even after this fix) a pre-warmed cache. Harmless today,
+but if `trtr_classifier_eval.json` is ever deleted on a future run where
+`trtr_classifier.pt` already exists, the JSON would get rewritten with no
+corresponding retraining — same class of bug (two independent guards on
+what should be one atomic artifact), not yet hit in practice. Not fixed
+now — scope discipline, not an oversight.
+
+**Before the next step05 run**: delete both stale artifacts so the
+"save once" / "write once" guards don't short-circuit the now-fixed code
+path — `rm -f outputs/models/trtr_classifier_eval.json
+outputs/models/trtr_classifier.pt` (the `.pt` was never written per this
+whole investigation, but check both regardless). Then re-run step05,
+verify `trtr_classifier.pt` exists and the JSON has `per_class_f1` with 6
+entries, before trusting `DiagnosticUtilityReward`'s reliability scaling
+as anything other than a no-op in any run so far.
