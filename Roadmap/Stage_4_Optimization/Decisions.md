@@ -1113,3 +1113,45 @@ whole investigation, but check both regardless). Then re-run step05,
 verify `trtr_classifier.pt` exists and the JSON has `per_class_f1` with 6
 entries, before trusting `DiagnosticUtilityReward`'s reliability scaling
 as anything other than a no-op in any run so far.
+
+## Gate 3 smoke test — HYP `r_diag` anomaly is two distinct episodes, not one collapse/recovery
+
+Gate 3's class-adjusted verdict (+0.0409, non-negative) is a real pass —
+PPO diagnostics (grad_norm, KL, clip_fraction) look healthy in aggregate,
+and the original "reward declines" smoke-test warning is fully explained
+by class-rotation bias, not policy degradation. That headline holds.
+
+But the per-class HYP trace does not reduce to a single "collapse then
+recover" story, and collapsing it into one would lose the more
+actionable finding. Two mechanistically different anomalies were found
+in the same run:
+
+1. **iter=13 — single-iteration PPO instability.** `grad_norm` spiked to
+   0.507 against a baseline of roughly 0.05-0.15, with elevated KL and
+   nonzero `clip_fraction` at that same step. `r_diag` for HYP dropped
+   correspondingly. This is consistent with ordinary transient PPO noise
+   — self-corrected within one iteration, no follow-on instability. Not
+   concerning.
+
+2. **iter 166-215 — extended near-zero stretch, no correlated PPO
+   instability.** For roughly 50 consecutive iterations, HYP's `r_diag`
+   sat near zero while KL and grad_norm stayed at or below baseline and
+   `clip_fraction` was zero throughout. PPO itself was stable the entire
+   time — this was not optimizer noise recovering, it was the diagnostic
+   reward channel staying stuck low while training looked fine by every
+   other signal. Attributable to the TRTR classifier's weak HYP
+   reliability (`per_class_f1` = 0.3755 for HYP), not a PPO defect.
+
+These have different implications for what to trust. Episode 1 says "PPO
+is fine, ignore this blip." Episode 2 says "the diagnostic reward signal
+for HYP specifically has an extended low-signal failure mode that is
+independent of PPO health" — a caveat about reward *quality* for this
+class, not about reward *plumbing* or PPO wiring correctness.
+
+**Decision**: Gate 3 remains passed — this caveat doesn't block it, and
+the class-adjusted verdict already accounts for the fact that HYP scores
+lower on average. Recommend lightweight per-class `r_diag` monitoring
+(mean/min/max per class, logged every N iterations) during the full
+Stage 4 RL fine-tuning run, so if this HYP pattern recurs at the full
+iteration count it's caught from the training log directly rather than
+requiring a post-hoc CSV dive like this one.
