@@ -791,7 +791,8 @@ def _metric_tstr_trtr(
     if not trtr_eval_path.exists():
         import json as _json
         trtr_eval_path.write_text(_json.dumps(
-            {"accuracy": trtr.get("accuracy"), "macro_f1": trtr.get("macro_f1")}, indent=2
+            {"accuracy": trtr.get("accuracy"), "macro_f1": trtr.get("macro_f1"),
+             "per_class_f1": trtr.get("per_class_f1")}, indent=2
         ))
         if log:
             log.info(
