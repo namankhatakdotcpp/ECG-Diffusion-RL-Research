@@ -1215,3 +1215,477 @@ a stable-but-stuck classifier-reliability issue (like Gate 3's iter
 166-215 episode) before deciding whether to retrain, reweight the reward
 function, or investigate the TRTR classifier further. Do not launch a
 longer/production run until this is resolved.
+
+## `analyze_stage4_hyp_other.py` TRTR cross-reference bug — CONFIRMED and fixed (taxonomy key mismatch, not missing data)
+
+While investigating whether the independent Mentor Classifier corroborates
+the HYP/OTHER `r_diag` collapse above, `analyze_stage4_hyp_other.py`'s
+section 4 (TRTR cross-reference) printed `per_class_f1=None` for every one
+of the Mentor Classifier's 4 classes (Normal/STEMI/NSTEMI/AFIB). Read
+directly from source, both producer and consumer, before concluding
+anything — this was **not** missing GPU data.
+
+**Root cause, confirmed from source**: `trtr_classifier_eval.json` is
+written by `step05_baseline_eval.py:790-795`, with `per_class_f1` sourced
+from `f1_score(y_test, preds_arr, average=None).tolist()`
+(`step05_baseline_eval.py:720`) — a list ordered
+`[NORM, MI, STTC, CD, HYP, OTHER]`, the diffusion-native 6-class taxonomy
+(see `step03_eda_and_class_mapping.py`). `analyze_stage4_hyp_other.py`
+correctly converts that list to a dict via `TRTR_FIXED_CLASS_ORDER`, but
+then looked it up with `trtr_pcf.get(cname)` where `cname` iterates over
+`class_names` — discovered dynamically from the Mentor Classifier's own
+`per_class_f1` dict, which per `mentor_eval/classification_validation.py:230`
+is always keyed by `MENTOR_CLASSES = ["Normal", "STEMI", "NSTEMI", "AFIB"]`
+(`mentor_eval/class_mapping.py:41`). Two different, non-overlapping
+taxonomies, direct same-name key lookup across them — e.g.
+`{"NORM":..,"HYP":..,"OTHER":..}.get("STEMI")` always returns `None`.
+
+**Bonus, same root cause, also confirmed**: `TARGET_CLASSES = ["HYP",
+"OTHER"]` (line 54) can never match anything in `class_names`, since
+`class_names` is always the Mentor taxonomy's 4 classes. The script's own
+stated purpose ("cross-checks whether HYP/OTHER's r_diag collapse... is
+corroborated") was structurally unreachable — the `<-- TARGET` marker
+never fires, silently. This is the Finding-1-equivalent scope limitation
+(Mentor Classifier has no HYP/OTHER class) manifesting as dead code
+instead of an explicit message.
+
+**Fixed** (`analyze_stage4_hyp_other.py`): section 4 now routes each Mentor
+class name through the already-documented, non-invented
+`mentor_eval.class_mapping.MENTOR_TO_TRAINED_CLASS` bridge
+(`Normal->NORM, STEMI->MI, NSTEMI->STTC, AFIB->None`) before looking it up
+in `trtr_pcf`, and reports `"N/A (no trained-model equivalent)"` explicitly
+for AFIB rather than a silent `None`. This is a many-to-one proxy
+comparison, not an identical-class comparison, and the script now says so
+in its own output. Also added an explicit `[SCOPE LIMITATION]` message
+printed as soon as `class_names` is resolved, and reworded section (b)'s
+"insufficient data" message to state plainly that `mentor generated_f1`
+for HYP/OTHER will always be `None` by construction, not because of a
+missing or stale file.
+
+**Does not change any already-recorded number** — this script only prints
+a diagnostic cross-check table; it does not write to any JSON/CSV that
+feeds Decisions.md numbers elsewhere.
+
+## Second, separate bug found while verifying the fix above — `mentor_macro_f1` has no guard against a phantom AFIB=0 score (structural bug CONFIRMED from source; whether it actually fired for the recorded 0.4064 is NOT verified)
+
+Distinct root cause from the taxonomy-key bug above, found while checking
+whether AFIB needed excluding from any macro-average per the earlier
+review pass on this investigation's prompt.
+
+**Structural bug — CONFIRMED by reading `mentor_eval/classification_
+validation.py` directly.** `generate_for_class` correctly skips AFIB
+during Stage 2 (generated-data eval) — `MENTOR_TO_TRAINED_CLASS["AFIB"]
+is None` (no trained model class to condition on), so AFIB is appended to
+`skipped` and contributes zero rows to `gen_X`/`gen_y`
+(`classification_validation.py:300-316`). But
+`evaluate_classifier(model, gen_X, gen_y, n_classes, device, MENTOR_CLASSES,
+...)` is then still called with the full `n_classes=4` and the full
+`MENTOR_CLASSES` list (`classification_validation.py:325-327`). Inside
+`evaluate_classifier`, the `"macro_f1"` key (`classification_validation.py:
+223`) is computed via `f1_score(y, pred, average="macro", zero_division=0)`
+with **no explicit `labels=` argument** — unlike the `per_class_f1` line
+just below it (line 219), which does pass `labels=list(range(n_classes))`
+explicitly.
+
+**Precisely what this means, not overstated**: per documented sklearn
+semantics, `f1_score`'s default `labels=None` resolves to the union of
+labels actually present in `y_true` and `y_pred` (`unique_labels`), NOT
+the full `range(n_classes)`. Since `gen_y` (true labels) never contains
+AFIB's index by construction, whether AFIB's phantom F1=0 actually enters
+the macro average for a given run depends entirely on whether the trained
+4-class classifier's `argmax` prediction ever lands on the AFIB index for
+at least one generated sample — plausible given NSTEMI's own generated-F1
+was already measured at ~0.170 (heavy misclassification, Finding 2 above),
+but **not verified either way for the specific iter=1000 run**: this would
+require the run's raw prediction array or confusion matrix
+(`confusion_matrix_generated_plain.txt` under
+`outputs/mentor_review/rl_checkpoint_iter1000_rep{0,1,2}/`, GPU-server-only,
+not committed to this repo), which was not inspected. Could not be
+empirically tested locally either — this repo's `.venv` (referenced
+earlier in this file as working) currently has a broken `python3 ->
+python3.14` symlink on this machine, and no system Python here has
+sklearn installed; reasoning above is from documented sklearn behavior,
+not an executed check. **Do not report this as "0.4064 is confirmed
+deflated"** — the correct status is: the code has no explicit guard
+against this happening, so it is not safe to trust `mentor_macro_f1` as
+AFIB-clean without checking, but whether it actually was contaminated
+this specific run is INCONCLUSIVE pending the GPU-side confusion matrix.
+`gen_metrics["excluded_classes"] = skipped` (`classification_validation.py:
+330`) records AFIB's exclusion as metadata only; nothing re-derives
+`macro_f1` from the 3 evaluable classes regardless of whether contamination
+occurred.
+
+**Consequence for the recorded `mentor_macro_f1 ≈ 0.4064, std ≈ 0.0522`**
+(iteration 1000, used to flag `diffusion_rl_selected_UNVALIDATED.pt` as
+too-noisy-to-trust): treat as **possibly, not confirmed, deflated**. Do
+not use 0.4064 for any checkpoint promotion/certification decision until
+(a) the fix below is implemented and (b) the actual generated-data
+confusion matrix for that run is checked for AFIB predictions — if none
+exist, 0.4064 was already AFIB-clean by sklearn's default behavior and no
+recompute is needed; if any exist, a recompute is needed and the true
+3-class macro-F1 would be higher than 0.4064 by an amount that depends on
+how many AFIB-index predictions occurred. This does not change the
+HYP/OTHER `r_diag` FAILURE verdict above (that's a separate,
+native-6-class-taxonomy metric, computed differently, unaffected by this
+bug) — but it does mean the "mentor macro-F1 too noisy to trust" framing
+should not be cited as a second, confirmed, independent reason to withhold
+checkpoint certification until checked.
+
+**Fixed in code, as its own isolated commit, separate from the
+`analyze_stage4_hyp_other.py` fix above** — these are two unrelated bugs
+that happen to share a taxonomy/exclusion theme, kept in separate commits
+per instruction so either can be reviewed or reverted independently.
+`evaluate_classifier` now takes an explicit `eval_labels` parameter; both
+callers pass `[i for i, c in enumerate(class_names) if c not in skipped]`
+(empty `skipped` for the real-data path, which never skips anything) so
+`macro_f1`/`weighted_f1` are computed with `labels=eval_labels` explicitly
+— mirroring the pattern already used for `roc_data`'s per-class AUC loop
+(`classification_validation.py:187-193`), which already skips classes
+with zero true samples, rather than inventing a new exclusion mechanism.
+`per_class_f1`/`per_class_precision`/`per_class_recall` still report all
+`n_classes` (skipped classes correctly show `0.0`, not removed from the
+dict — a class being unevaluable is different information from a class
+scoring zero, and both stay visible instead of one silently swallowing
+the other).
+
+**GPU re-evaluation deliberately NOT triggered as part of this pass**,
+per the project's own "no GPU re-evaluation before investigation is
+complete" discipline and explicit instruction to keep this as a deferred,
+manual step rather than auto-chaining an expensive re-run onto a code fix
+whose corrected output isn't known yet. Exact command to run manually when
+ready:
+
+    mentor_eval.classification_validation --ckpt outputs/models/
+    diffusion_rl_selected_UNVALIDATED.pt --run-tag stage4_finetune_v1
+
+on the GPU server (3 reps, matching the original evaluation's
+`n_repeats`), to get the corrected `mentor_macro_f1` before deciding
+whether `diffusion_rl_selected_UNVALIDATED.pt` clears any macro-F1-based
+bar. Not launched automatically as part of this investigation pass — deliberately
+deferred to a manual step once the fix itself has been reviewed.
+
+**Blast radius, checked by grepping every consumer of `mentor_macro_f1` in
+the codebase, not just the one printed figure**: `gen_metrics.get(
+"macro_f1")` (potentially affected by this bug) feeds THREE separate
+downstream uses in `step07_rl_finetuning.py`, not only the reported number
+in Finding 3 above:
+
+1. **The `mentor_macro_f1_std >= min_delta` stability warning** (Finding 3)
+   — already flagged as possibly-deflated above.
+2. **`rl.checkpoint_selection.metric`** (`config.yaml:226`, default
+   `mentor_macro_f1`, `mode: max`) — this is the mechanism that actually
+   selected `diffusion_rl_selected_UNVALIDATED.pt` in the first place, not
+   just reported a number about it. **Practical impact on THIS specific
+   run is muted, not zero**: `full_eval_checkpoints` defaults to
+   `[1000, 5000]` (`config.yaml:209`) and `stage4_finetune_v1` only ran to
+   iteration 1000, so exactly one full-eval checkpoint existed — the
+   "select the max-`mentor_macro_f1` checkpoint among candidates"
+   mechanism had a single candidate, not a real choice to get wrong. The
+   concern is forward-looking: a longer run with multiple
+   `full_eval_checkpoints` entries, evaluated with this same unfixed bug,
+   could have picked the wrong "best" checkpoint if AFIB-index
+   misclassification contamination happened to differ between candidate
+   checkpoints (plausible, since it depends on that specific checkpoint's
+   generated-sample quality). Now fixed going forward by this same code
+   change.
+3. **`rl.early_stopping.metric`** (`config.yaml:220`, same default) —
+   **not actually a risk for this run**: `early_stopping.enabled: false`
+   (`config.yaml:219`), confirmed off by default and not overridden
+   anywhere for `stage4_finetune_v1` per the run's own config. No stop
+   decision was ever gated on this metric for the run being discussed in
+   this file.
+
+**Net effect on how to read this file's existing Stage 4 conclusions**:
+the HYP/OTHER `r_diag` FAILURE verdict (native 6-class taxonomy metric,
+different code path entirely) is unaffected and stands. The "mentor
+macro-F1 too noisy to trust the checkpoint" framing and the specific
+`0.4064` figure should be treated as provisional pending the recompute
+above — not because the checkpoint-selection mechanism definitely picked
+wrong (it had no real choice to make this run), but because the number
+itself may not be a clean estimate of `diffusion_rl_selected_UNVALIDATED.
+pt`'s actual generated-data macro-F1.
+
+## Two new local analysis tools (NSTEMI confusion breakdown, A3/diagnostic-reward correlation) — verified against synthetic fixtures, NOT yet run against real GPU data
+
+Continuing the HYP/OTHER/NSTEMI investigation above. Both tools are
+read-only analyses of existing artifacts (no retraining), written and
+locally verified per this project's "verified for real, not just written"
+standard — but verified against **synthetic fixture data matching the
+real schema**, not the actual GPU-server artifacts, which don't exist on
+this machine. Flagging that distinction explicitly rather than letting
+"verified" imply more than it does here.
+
+**1. `analyze_nstemi_confusion.py`** (repo root) — reads
+`classifier_generated_eval.json`'s `confusion_matrix` field (not the
+`_plain.txt` render — same underlying `cm` array, but structured) for each
+of the 3 `stage4_finetune_v1` iter=1000 mentor-eval reps, to distinguish
+whether NSTEMI's severe generated-F1 degradation (Finding 2: mean~0.170,
+rep0=0.000/rep1=0.378/rep2=0.131) is (A) collapse into one dominant wrong
+class, (B) broad confusion, or (C) qualitatively unstable across reps.
+Confusion-matrix orientation (rows=true/actual, columns=predicted)
+verified directly from `write_plain_confusion_table`'s own docstring and
+`confusion_matrix(y, pred, ...)`'s call convention
+(`classification_validation.py:151,194`) before writing any parsing logic
+— not assumed. Cross-checks its own from-confusion-matrix precision/
+recall/F1 against the JSON's own `per_class_precision/recall/f1` fields
+and flags `[MISMATCH]` if they disagree (a second, independent check on
+whether the JSON's reported per-class numbers are internally consistent
+with its own confusion matrix). **Locally verified**: ran against 3
+synthetic fixture JSONs (bare Python, `mentor_eval.class_mapping`'s
+`pandas` import chain stubbed out to avoid needing the missing local
+dependency) constructed to independently exercise all three verdict
+branches — confirmed the script correctly identified single-class
+collapse in a manufactured "all NSTEMI predicted STEMI" fixture, broad
+confusion in a manufactured spread fixture, and correctly flagged
+instability when the manufactured dominant wrong-class differed between
+reps. Also confirmed graceful `[BLOCKED]`-with-exact-GPU-command behavior
+when no local rep data exists (the actual current state of this repo).
+**Not yet run against real data** — GPU-only artifacts.
+
+**2. `analyze_a3_diag_correlation.py`** (repo root) — implements the
+mandatory raw-vs-detrended methodology already specified for this
+investigation: reports RAW Pearson/Spearman correlation between `r_a3`
+and `r_diag` for HYP and OTHER (explicitly labeled trend-confounded, not
+decision-bearing), then a FIRST-DIFFERENCED (occurrence-to-occurrence
+delta) correlation as the actual decision-bearing test, plus a rolling-
+window correlation to check stability across the run. Mechanical decision
+rule, not eyeballed: upgrades Finding 7 ("possible reward reallocation")
+from HYPOTHESIS to CONFIRMED for a given class only if detrended Pearson
+r < -0.3 AND p < 0.05 for that class; otherwise stays HYPOTHESIS, with
+both raw and detrended numbers always printed. "Iteration-to-iteration"
+is defined as successive occurrences of that specific class (`class`
+rotates per-iteration in the training loop, so HYP/OTHER rows are a
+subset, not adjacent CSV rows) — same convention already established by
+`diagnose_smoke_test_reward_trend.py`'s per-class trend section. Falls
+back to `np.corrcoef`-only (no p-value) if `scipy` is unavailable, and
+skips plot generation if `matplotlib` is unavailable, rather than
+crashing — both already project dependencies (`requirements.txt`) so this
+should only matter in a stripped-down check, not the GPU server.
+
+**Locally verified with real numpy/scipy/matplotlib** (installed into a
+disposable scratch virtualenv for this check only — this repo's own
+`.venv` has a broken `python3.14` symlink on this machine, unrelated to
+and not fixed as part of this investigation) against a synthetic
+`rl_training_log.csv` constructed with two deliberately different ground
+truths: HYP rows built with a genuine occurrence-to-occurrence coupling
+(each step's `r_a3` increase paired with a proportional `r_diag`
+decrease) and OTHER rows built with the same shared monotonic trend but
+independent, uncoupled per-occurrence noise. Confirmed the script
+correctly separates these despite near-identical RAW correlations
+(HYP raw Pearson -0.75, OTHER raw Pearson -0.98 — both look like strong
+evidence at a glance): detrended correlation correctly returned HYP as
+CONFIRMED (r=-0.6947, p=1.5e-15) and OTHER as HYPOTHESIS (r=-0.2091, not
+past the -0.3 threshold) — proving the decision rule actually
+distinguishes genuine coupling from shared-trend confound rather than
+just rubber-stamping whatever the raw number says. Also verified the
+`[BLOCKED]`-with-exact-command path (missing CSV) and the
+`[INCONCLUSIVE]`-too-few-occurrences path (n<5). **Not yet run against
+the real `rl_training_log.csv`** — that file is GPU-server-only; Finding 7
+remains HYPOTHESIS, not CONFIRMED, until this script is actually run
+against it.
+
+**Next step for both (not done here)**, on the GPU server after `git
+pull`:
+
+    python analyze_nstemi_confusion.py --run-tag stage4_finetune_v1 --iteration 1000 --reps 0 1 2
+    python analyze_a3_diag_correlation.py --csv logs/rl_training_log.csv --rolling-window 100
+
+## Reconciliation with an "earlier conditioning-collapse investigation" — SOURCE NOT FOUND IN THIS REPO, cannot reconcile, flagging rather than fabricating
+
+The investigation brief for this session asked for an explicit
+reconciliation between (A) "an earlier conditioning-collapse
+investigation" that reportedly found NORM and OTHER could collapse at
+similar rates despite very different support (contradicting a simple
+class-imbalance explanation), and (B) this file's own current finding
+that HYP/OTHER specifically degrade during RL fine-tuning while CD/STTC
+improve (Finding 5/Gate-3-onward entries above) — with the explicit
+instruction to quote the prior conclusion exactly, not paraphrase from
+memory.
+
+**Searched, not assumed absent**: grepped every `Decisions.md`,
+`Objectives.md`, `Experiment_Log.md`, and `Reports/*.md` under
+`Roadmap/Stage_0` through `Stage_5` for "collapse", "imbalance",
+"min_class_samples", "similar rate", and "despite ... different support"
+(exact and near-exact phrasing) — including this Stage 4 file itself,
+Stage 1's directional-conditioning-probe work (the closest thematic match,
+`Experiment_3_Directional_Probe`), and Stage 2's representation-collapse
+item (`item8_representation_collapse`, `Item8_Report.md`). **No file in
+this repository contains a finding matching that description.** Stage 1's
+actual conditioning-related finding (`Stage_1_Diagnosis/Decisions.md`,
+2026-07-02 entry) is a different claim entirely — AFIB behaving as an
+out-of-distribution reject class in a moderate-noise regime, with NSTEMI
+taking over that role at extreme noise — not a NORM/OTHER collapse-rate
+comparison.
+
+**Not treating this as proof the claim is false** — the source investigation
+this session's brief was based on may reference a conversation, a
+GPU-server-only report, or context outside this repository that wasn't
+committed here. But per this project's own established standard (see the
+"cited validation reference numbers do not exist" entry above, same
+discipline applied to the STEMI A3 Mahalanobis 5.96/8.56 figures): a
+specific claim being used to shape an interpretation should not be
+repeated, paraphrased, or reconciled against as if verified, once a
+targeted search fails to locate it. **SCOPE LIMITATION / INCONCLUSIVE**:
+this reconciliation cannot be completed from this repository's contents.
+If this earlier finding exists in a form not committed to this repo (chat
+history, a local file outside version control, a GPU-server-only report),
+point this investigation at that specific source directly next time,
+rather than at this repo's search surface, which has now been exhausted
+for this claim.
+
+**Second search pass, specifically for PDF/DOCX** (the earlier search only
+covered `.md`/`.txt`/`.py`, which cannot find text embedded in a binary
+document): `find . -type f \( -iname "*.pdf" -o -iname "*.docx" -o -iname
+"*.doc" \)` — only matches are two matplotlib-generated figure PDFs
+(`outputs/results/fig01_class_distribution.pdf`,
+`fig02_ecg_examples.pdf`, plots not reports) and matplotlib's own library
+toolbar-icon assets under `.venv/`. Also checked `git log --all
+--diff-filter=A --name-only -- "*.pdf" "*.docx"` across every branch and
+commit in this repository's history — zero PDFs or DOCX files have ever
+been committed here. **Confirmed, not assumed**: no version of the
+referenced "Internal Research Report" / "ECG Diffusion Model Disease
+Conditioning Investigation Report" exists in this repository, currently
+or historically. SCOPE LIMITATION stands, now on stronger evidence
+(binary-format search + full git history, not just current-tree text
+search).
+
+## Stage 3 macro-F1 blast radius — AFFECTED, same root cause as the Stage 4 bug, all 5 candidates equally exposed
+
+Traced `Roadmap/Stage_3_Architecture_Improvements/Reports/Stage3_Comparison.
+{csv,md}`'s "Generated Macro-F1" column (S3-001's cited `0.3421`,
+referenced at the top of this file as part of the RL-base-architecture
+selection justification) back to its exact producing code, per instruction
+not to guess.
+
+**Provenance, confirmed from source**: `Stage3_Comparison.csv`/`.md` is
+generated by `Roadmap/Stage_3_Architecture_Improvements/Code/
+stage3_candidates/compare_candidates.py`'s `load_candidate_row`
+(`compare_candidates.py:230-239`), which reads `mentor_eval/<run_id>/
+classifier_generated_eval.json` and does `row["Generated Macro-F1"] =
+round(gen_metrics["macro_f1"], 4)` — the exact same field, produced by the
+exact same `evaluate_classifier` function in `mentor_eval/
+classification_validation.py`, that the Stage 4 bug above was found in.
+That JSON is itself produced by `run_stage3_queue.py:164`'s subprocess
+call to `python -m mentor_eval.classification_validation` — same module,
+not a reimplementation or a different code path that might have handled
+AFIB differently.
+
+**Classification: AFFECTED** (structural bug present in the code path
+that produced this number) — **not** "confirmed numerically deflated,"
+same distinction already drawn for the Stage 4 figure above. Whether
+`0.3421` (or any of S3-002 through S3-005's own Generated Macro-F1
+values, ALL FIVE of which went through this identical pipeline) was
+actually contaminated depends on whether that specific run's classifier
+ever predicted the AFIB index on generated data — not verifiable locally,
+and the original per-run confusion matrices/raw JSONs for these Stage 3
+runs were not located in this repo during this pass (not necessarily
+absent — GPU-server artifacts, not committed, same as Stage 4's).
+Caveat added directly to `Stage3_Comparison.md` itself (not just this
+file) so a reader of that table sees it at the point of use, not only
+here.
+
+**One partial mitigant, not a full resolution**: because all 5 candidates
+were scored by the identical pipeline with the identical bug, the
+*relative ranking* between them (which drove the S3-001-as-RL-base
+decision at the top of this file) is plausibly more robust to this bug
+than any single absolute value — a systematic deflation applied
+similarly across candidates would shift all scores down without
+necessarily reordering them. This is a plausibility argument, not a
+verified one: it assumes roughly similar AFIB-contamination rates across
+candidates, which hasn't been checked. **Do not treat the S3-001
+selection as re-validated by this argument** — it's a reason not to
+panic, not a reason to skip the recompute.
+
+## Corrected GPU re-evaluation protocol — verified from source, NOT the command given earlier in this session
+
+The command given earlier in this session's consolidated report
+(`python -m mentor_eval.classification_validation --ckpt ... --run-tag
+stage4_finetune_v1`) is **wrong on two counts**, caught before being sent
+to the GPU server: `classification_validation.py`'s actual CLI
+(`classification_validation.py:358-363`) has no `--run-tag` argument at
+all (`--ckpt`, `--out-dir`, `--seed` default 42, `--guidance-scale`
+default `None`) — that invocation would fail with an argparse error. More
+importantly, a single bare invocation only runs ONE evaluation with one
+seed; it does **not** reproduce the 3-repetition protocol that produced
+the original `mentor_macro_f1 ≈ 0.4064 ± 0.0522`.
+
+**Actual protocol, read directly from `step07_rl_finetuning.py`'s
+`_full_checkpoint_eval`/`_run_classification_validation_once`
+(`step07_rl_finetuning.py:722-826`), not guessed**: for `n_repeats`
+(`rl.mentor_stability_check_repeats`, `config.yaml`, default `3`), it
+runs `python -m mentor_eval.classification_validation --ckpt <ckpt_path>
+--out-dir <out_dir> --seed <seed>` once per repeat, with:
+- `seeds = [42 + i for i in range(n_repeats)]` → `42, 43, 44`
+- `out_dir = outputs/mentor_review/rl_checkpoint_iter{iteration:04d}_rep{i}`
+  for `i = 0, 1, 2` (matches the path pattern already used by
+  `analyze_nstemi_confusion.py` above)
+- no `--guidance-scale` override (call site passes none, so
+  `classification_validation.py`'s own default applies)
+- then `mentor_macro_f1 = mean(macro_f1 across the 3 runs)`,
+  `mentor_macro_f1_std = std(...)` — a simple post-hoc aggregation, not
+  something `classification_validation.py` itself computes.
+
+**Do not overwrite the original `rep0/rep1/rep2` directories** — those are
+the historical, pre-fix artifacts this whole investigation is trying to
+compare against; overwriting them would destroy the ability to do a
+before/after comparison. Corrected re-run writes to new
+`..._rep{i}_refixed` directories instead.
+
+Exact GPU commands (smallest correct approach — Option A, standalone
+`classification_validation` repeated 3 times matching the original
+protocol exactly; no new wrapper script needed, per instruction to prefer
+minimal):
+
+    for i in 0 1 2; do
+      seed=$((42 + i))
+      python -m mentor_eval.classification_validation \
+        --ckpt outputs/models/diffusion_rl_selected_UNVALIDATED.pt \
+        --out-dir outputs/mentor_review/rl_checkpoint_iter1000_rep${i}_refixed \
+        --seed $seed
+    done
+
+Then aggregate the corrected mean/std by hand or with a one-liner (not a
+new script, per the "smallest correct approach" instruction):
+
+    python -c "
+    import json, numpy as np
+    vals = [json.load(open(f'outputs/mentor_review/rl_checkpoint_iter1000_rep{i}_refixed/classifier_generated_eval.json'))['macro_f1'] for i in range(3)]
+    print('corrected mentor_macro_f1 mean =', np.mean(vals), 'std =', np.std(vals), 'per-rep =', vals)
+    "
+
+**GPU paths, all confirmed from source in this pass, none guessed**:
+- `logs/<run_tag>/rl_training_log.csv` — `logs_dir = logs_dir / run_tag`
+  when `--run-tag` is set (`step07_rl_finetuning.py:1130-1133`),
+  `cfg.paths.logs` defaults to `logs/` (`config.yaml:22`). For
+  `stage4_finetune_v1`: `logs/stage4_finetune_v1/rl_training_log.csv`.
+- `outputs/models/diffusion_rl_selected_UNVALIDATED.pt` — checkpoint-
+  selection output path, referenced throughout this file, not re-derived
+  here.
+- `outputs/mentor_review/rl_checkpoint_iter{N:04d}_rep{R}/` — full-eval
+  output, `step07_rl_finetuning.py:797-810`.
+- Stage 3 baseline comparison artifacts
+  (`Roadmap/Stage_3_Architecture_Improvements/Reports/Stage3_Comparison.
+  {csv,md}`, `Results/S3-001/`) are already committed to this repo (not
+  GPU-only) — no new GPU path needed to re-read them, only to
+  re-generate a corrected version if that's ever undertaken separately
+  (out of scope for this pass).
+
+## `analyze_a3_diag_correlation.py` corrected — was using the wrong CSV path convention
+
+Caught before sending anything to the GPU: the script defaulted to a flat
+`logs/rl_training_log.csv`, but per the path-provenance check above, a
+tagged run (`--run-tag stage4_finetune_v1`, which is how this project's
+actual Stage 4 run was launched) writes to `logs/stage4_finetune_v1/
+rl_training_log.csv` instead — the flat path is only where an *untagged*
+run would write, which `stage4_finetune_v1` is not. **Fixed**: the script
+now takes `--run-tag` (default `stage4_finetune_v1`, matching
+`analyze_stage4_hyp_other.py`'s own convention) and resolves the CSV path
+from it (`logs/<run-tag>/rl_training_log.csv`) unless `--csv` is passed
+explicitly to override. Re-verified locally (disposable scratch
+virtualenv, same as before): confirmed the resolved path matches
+`step07_rl_finetuning.py`'s actual write location, confirmed the
+`[BLOCKED]` message now suggests the correct `--run-tag`-based command,
+and re-ran the full synthetic-fixture correlation test from earlier in
+this session to confirm the CONFIRMED/HYPOTHESIS decision logic itself
+was untouched by this change (still correctly separates HYP's genuine
+coupling from OTHER's shared-trend-only confound).
