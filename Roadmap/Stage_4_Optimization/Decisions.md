@@ -1639,10 +1639,37 @@ minimal):
     for i in 0 1 2; do
       seed=$((42 + i))
       python -m mentor_eval.classification_validation \
-        --ckpt outputs/models/diffusion_rl_selected_UNVALIDATED.pt \
+        --ckpt outputs/models/stage4_finetune_v1/diffusion_rl_selected_UNVALIDATED.pt \
         --out-dir outputs/mentor_review/rl_checkpoint_iter1000_rep${i}_refixed \
         --seed $seed
     done
+
+**CORRECTION, caught after the first GPU attempt failed with `[BLOCKED] ...
+diffusion_rl_selected_UNVALIDATED.pt, which doesn't exist on this
+machine`**: the command above originally used the flat path
+`outputs/models/diffusion_rl_selected_UNVALIDATED.pt`. That was **not
+re-derived from source** despite the surrounding text claiming otherwise
+("GPU paths, all confirmed from source... none guessed" below) — it was
+carried over unverified from how the checkpoint was informally referred to
+earlier in this file. Actually checking `models_dir` scoping
+(`step07_rl_finetuning.py:1131`, `models_dir = models_dir / run_tag` when
+`--run-tag` is set) against where the selected checkpoint is written
+(`step07_rl_finetuning.py:1558`, `models_dir / "diffusion_rl_selected.pt"`)
+shows it should be `outputs/models/stage4_finetune_v1/
+diffusion_rl_selected_UNVALIDATED.pt` (the manual `_UNVALIDATED` rename,
+per the "Renamed the selected checkpoint..." entry above, presumed done
+in-place within that same run-tag directory, not moved to a flat path --
+this specific presumption is NOT independently confirmed, only the
+run-tag-scoped directory it should live in is). **Before running the
+corrected 3-rep loop, confirm this exact path exists first**:
+
+    find outputs/models -iname "diffusion_rl_selected*"
+
+If it's not at `outputs/models/stage4_finetune_v1/
+diffusion_rl_selected_UNVALIDATED.pt`, use whatever the `find` above
+actually returns instead of guessing further -- do not substitute a
+different checkpoint (e.g. a periodic `rl_ckpt_iter*.pt`) without
+confirming it's the one `checkpoint_selection` actually chose.
 
 Then aggregate the corrected mean/std by hand or with a one-liner (not a
 new script, per the "smallest correct approach" instruction):
@@ -1658,9 +1685,13 @@ new script, per the "smallest correct approach" instruction):
   when `--run-tag` is set (`step07_rl_finetuning.py:1130-1133`),
   `cfg.paths.logs` defaults to `logs/` (`config.yaml:22`). For
   `stage4_finetune_v1`: `logs/stage4_finetune_v1/rl_training_log.csv`.
-- `outputs/models/diffusion_rl_selected_UNVALIDATED.pt` — checkpoint-
-  selection output path, referenced throughout this file, not re-derived
-  here.
+- `outputs/models/stage4_finetune_v1/diffusion_rl_selected_UNVALIDATED.pt`
+  — checkpoint-selection output path. **Corrected after the flat
+  (non-run-tag-scoped) path failed on the GPU server** -- see the
+  correction note above; re-derived from `models_dir`/`run_tag` scoping
+  in `step07_rl_finetuning.py`, not just referenced from memory this
+  time. Confirm with `find outputs/models -iname
+  "diffusion_rl_selected*"` before trusting even this corrected path.
 - `outputs/mentor_review/rl_checkpoint_iter{N:04d}_rep{R}/` — full-eval
   output, `step07_rl_finetuning.py:797-810`.
 - Stage 3 baseline comparison artifacts
@@ -1689,3 +1720,58 @@ and re-ran the full synthetic-fixture correlation test from earlier in
 this session to confirm the CONFIRMED/HYPOTHESIS decision logic itself
 was untouched by this change (still correctly separates HYP's genuine
 coupling from OTHER's shared-trend-only confound).
+
+## GPU results, real data: NSTEMI verdict = C (unstable across reps); both HYP and OTHER A3-coupling stay HYPOTHESIS
+
+Both analysis tools were run for real on the GPU server against
+`stage4_finetune_v1`'s actual artifacts. Results below are from that real
+run, not synthetic fixtures.
+
+**`analyze_nstemi_confusion.py` — CONFIRMED, verdict (C) unstable across
+reps**, not (A) or (B) alone:
+- rep0: 0/100 true NSTEMI correctly classified; 92% misclassified as
+  STEMI -- near-total single-class collapse this rep.
+- rep1: 27/100 correct; remaining errors spread across Normal/STEMI/AFIB
+  -- broad confusion this rep, not single-class collapse.
+- rep2: 7/100 correct; 50% misclassified as STEMI, 42% as Normal -- a
+  two-way split, neither purely (A) nor purely (B).
+
+Three genuinely different failure patterns across three reps of the
+SAME checkpoint (not three different checkpoints) -- this is real
+evidence of instability in the Mentor Classifier's NSTEMI evaluation at
+this sample count, consistent with (and now directly explaining) the
+already-recorded NSTEMI generated-F1 spread (rep0=0.000, rep1=0.378,
+rep2=0.131, Finding 2). Do not treat any single rep's confusion pattern
+as representative of "how the model handles NSTEMI" -- the pattern
+itself is unstable, which is itself the finding.
+
+**`analyze_a3_diag_correlation.py` — CONFIRMED, both classes stay
+HYPOTHESIS, decision rule applied exactly as pre-registered**:
+- HYP: detrended Pearson r=-0.278, p=0.0002. Misses the -0.3 threshold
+  (barely: 0.278 vs 0.3) -- stays HYPOTHESIS, not CONFIRMED. The p-value
+  alone would have looked compelling; the combined r-AND-p rule correctly
+  withheld confirmation on a borderline effect size.
+- OTHER: detrended Pearson r=-0.0086, p=0.91 -- indistinguishable from
+  zero. Rolling correlation sign-flips across the run (min=-0.968,
+  max=+0.087) -- as clean a "no stable coupling" signal as this method
+  produces. Stays HYPOTHESIS.
+
+**Do not write "reward hacking, confirmed" into any report based on
+these numbers.** The pre-registered threshold did exactly its job here:
+it stopped a borderline HYP correlation (which would read as compelling
+on p-value alone, p=0.0002) from being promoted to a confirmed causal
+claim on effect size that falls just short of the bar. Finding 7 remains
+HYPOTHESIS for both classes.
+
+**Corrected `mentor_macro_f1` re-evaluation — INCOMPLETE, blocked on a
+checkpoint-path bug (this investigation's bug, not a new pipeline bug)**:
+the GPU run correctly executed Stage 1 (real-data classifier retrain) but
+hit `[BLOCKED] Stage 2 (evaluate on generated ECGs) needs outputs/models/
+diffusion_rl_selected_UNVALIDATED.pt, which doesn't exist on this
+machine` -- because the command used earlier in this file had the wrong
+(non-run-tag-scoped) checkpoint path, corrected above. **This is the
+corrected script behaving exactly as designed**: it refused to fabricate
+a generated-data score for a checkpoint it couldn't find, and said so
+explicitly ("No generated-data metrics were fabricated") rather than
+silently producing a number. Not yet re-attempted with the corrected
+path -- next step, not done here.
