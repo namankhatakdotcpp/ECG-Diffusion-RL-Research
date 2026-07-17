@@ -51,6 +51,8 @@ from typing import Optional
 
 import numpy as np
 
+from mentor_eval.class_mapping import MENTOR_TO_TRAINED_CLASS
+
 TARGET_CLASSES = ["HYP", "OTHER"]
 TRTR_FIXED_CLASS_ORDER = ["NORM", "MI", "STTC", "CD", "HYP", "OTHER"]
 
@@ -112,6 +114,20 @@ def main() -> None:
               "schema mismatch, inspect the files manually.")
         return
     print(f"\nClasses found: {class_names}")
+    missing_targets = [c for c in TARGET_CLASSES if c not in class_names]
+    if missing_targets:
+        print(
+            f"\n[SCOPE LIMITATION] {missing_targets} not present in the Mentor "
+            "Classifier's own taxonomy (MENTOR_CLASSES = Normal/STEMI/NSTEMI/AFIB "
+            "-- see mentor_eval/class_mapping.py). The Mentor Classifier has no "
+            "HYP or OTHER class at all, so this script CANNOT corroborate or "
+            "refute the HYP/OTHER r_diag collapse via the Mentor Classifier -- "
+            "this is a hard scope limitation, not missing data. Sections 1-3 "
+            "below report on the 4 classes the Mentor Classifier does cover; "
+            "they do not speak to HYP/OTHER. Use the diffusion-native 6-class "
+            "TRTR classifier (trtr_classifier_eval.json, cross-referenced in "
+            "section 4) for direct HYP/OTHER evaluation instead."
+        )
 
     # ── 1/2. Per-rep, per-class table ────────────────────────────────────────
     print("\n[1/2. Per-rep, per-class F1/precision/recall — target classes]")
@@ -174,11 +190,27 @@ def main() -> None:
             trtr_pcf = pcf
         elif isinstance(pcf, list):
             trtr_pcf = dict(zip(TRTR_FIXED_CLASS_ORDER, pcf))
+        print(
+            "  NOTE: TRTR per_class_f1 is keyed in the diffusion-native taxonomy "
+            f"({TRTR_FIXED_CLASS_ORDER}), not the Mentor Classifier's taxonomy "
+            f"({class_names}). Looking up a Mentor class name directly against "
+            "trtr_pcf (e.g. trtr_pcf.get('STEMI')) always returns None -- there is "
+            "no 'STEMI' key in the TRTR taxonomy. Translating via the documented "
+            "mentor_eval.class_mapping.MENTOR_TO_TRAINED_CLASS bridge instead "
+            "(same mapping used elsewhere in this repo for cross-taxonomy work); "
+            "this is a many-to-one proxy comparison, not an identical class."
+        )
         for cname in class_names:
-            t = trtr_pcf.get(cname)
+            trained_cls = MENTOR_TO_TRAINED_CLASS.get(cname)
+            if trained_cls is None:
+                t = None
+                t_label = "N/A (no trained-model equivalent, see class_mapping.py)"
+            else:
+                t = trtr_pcf.get(trained_cls)
+                t_label = f"{t}  (via trained class '{trained_cls}')"
             m = all_class_means.get(cname)
             marker = "  <-- TARGET" if cname in TARGET_CLASSES else ""
-            print(f"  {cname:6s}: TRTR per_class_f1={t}  vs. mentor generated_f1 this run={m}{marker}")
+            print(f"  {cname:6s}: TRTR per_class_f1={t_label}  vs. mentor generated_f1 this run={m}{marker}")
 
     # ── 5. checkpoint_metrics.json trend ──────────────────────────────────────
     print("\n[5. checkpoint_metrics.json trend]")
@@ -227,10 +259,16 @@ def main() -> None:
     print("\n(b) Is this a pre-existing classifier/data weakness, or did RL-generated "
           "data score worse than the original TRTR weakness alone would predict?")
     for cname in TARGET_CLASSES:
-        t = trtr_pcf.get(cname)
-        m = all_class_means.get(cname)
+        t = trtr_pcf.get(cname)  # HYP/OTHER are native TRTR taxonomy names -- correct key here.
+        m = all_class_means.get(cname)  # but never present: Mentor taxonomy has no HYP/OTHER.
         if t is None or m is None:
-            print(f"  {cname}: insufficient data (TRTR={t}, mentor={m}) -- cannot compare.")
+            print(
+                f"  {cname}: TRTR per_class_f1={t}, mentor generated_f1={m} -- cannot "
+                "compare. mentor=None is expected and permanent: the Mentor Classifier's "
+                "taxonomy (Normal/STEMI/NSTEMI/AFIB) has no HYP or OTHER class, so "
+                "all_class_means will never contain a HYP/OTHER entry. This is the "
+                "Finding-1 scope limitation, not missing/stale data."
+            )
             continue
         ratio = m / t if t > 0 else float("inf")
         if ratio >= 0.8:
