@@ -33,6 +33,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Optional
 
 import matplotlib
 matplotlib.use("Agg")
@@ -170,7 +171,18 @@ def _print_per_class_table(class_names, precision, recall, f1, title: str) -> No
         print(f"| {cls:<10} | {precision[i]:>10.4f} | {recall[i]:>10.4f} | {f1[i]:>10.4f} |")
 
 
-def evaluate_classifier(model, X, y, n_classes, device, class_names, out_path_cm: Path, title: str):
+def evaluate_classifier(model, X, y, n_classes, device, class_names, out_path_cm: Path, title: str,
+                         eval_labels: Optional[list[int]] = None):
+    """eval_labels restricts macro_f1/weighted_f1 to classes that were actually
+    evaluable (e.g. excludes a class skipped from generation entirely) --
+    defaults to all n_classes, matching prior behavior for callers that
+    don't skip anything (the real-data path). Passing the full range
+    explicitly, rather than relying on f1_score's default label-union
+    behavior, avoids silently including a class with zero true samples
+    whenever the model happens to predict that class for at least one
+    other sample (e.g. AFIB, which has no generated samples at all)."""
+    if eval_labels is None:
+        eval_labels = list(range(n_classes))
     Xt = torch.from_numpy(X.transpose(0, 2, 1)).float().to(device)
     model.eval()
     with torch.no_grad():
@@ -220,8 +232,9 @@ def evaluate_classifier(model, X, y, n_classes, device, class_names, out_path_cm
 
     metrics = {
         "accuracy":          float(acc),
-        "macro_f1":          float(f1_score(y, pred, average="macro",     zero_division=0)),
-        "weighted_f1":       float(f1_score(y, pred, average="weighted",  zero_division=0)),
+        "macro_f1":          float(f1_score(y, pred, average="macro",     zero_division=0, labels=eval_labels)),
+        "weighted_f1":       float(f1_score(y, pred, average="weighted",  zero_division=0, labels=eval_labels)),
+        "macro_f1_eval_classes": [class_names[i] for i in eval_labels],
         "balanced_accuracy": float(balanced_accuracy_score(y, pred)),
         "macro_auc":         macro_auc,
         "per_class_auc":     {k: v[2] for k, v in roc_data.items()},
@@ -322,9 +335,17 @@ def run(ckpt_path: Path, out_dir: Path, cfg, seed: int, log, guidance_scale=None
     gen_X = np.concatenate(gen_X, axis=0)
     gen_y = np.concatenate(gen_y, axis=0)
 
+    # eval_labels excludes classes skipped from generation (e.g. AFIB, which
+    # has no trained-model class to condition on) from macro_f1/weighted_f1 --
+    # without this, sklearn's default label-union behavior would silently
+    # include a skipped class in the macro average as a phantom F1=0 entry
+    # any time the classifier predicted that class's index for at least one
+    # other sample (see Roadmap/Stage_4_Optimization/Decisions.md).
+    gen_eval_labels = [name_to_idx[c] for c in MENTOR_CLASSES if c not in skipped]
     gen_metrics, gen_roc = evaluate_classifier(
         model, gen_X, gen_y, n_classes, device, MENTOR_CLASSES,
         out_dir / "confusion_matrix_generated.png", "Classifier on GENERATED data",
+        eval_labels=gen_eval_labels,
     )
     plot_roc_curves(gen_roc, out_dir / "roc_curves_generated.png", "ROC — classifier on generated data")
     gen_metrics["excluded_classes"] = skipped
