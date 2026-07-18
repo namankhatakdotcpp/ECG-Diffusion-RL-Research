@@ -1763,15 +1763,33 @@ on p-value alone, p=0.0002) from being promoted to a confirmed causal
 claim on effect size that falls just short of the bar. Finding 7 remains
 HYPOTHESIS for both classes.
 
-**Corrected `mentor_macro_f1` re-evaluation — INCOMPLETE, blocked on a
-checkpoint-path bug (this investigation's bug, not a new pipeline bug)**:
-the GPU run correctly executed Stage 1 (real-data classifier retrain) but
-hit `[BLOCKED] Stage 2 (evaluate on generated ECGs) needs outputs/models/
-diffusion_rl_selected_UNVALIDATED.pt, which doesn't exist on this
-machine` -- because the command used earlier in this file had the wrong
-(non-run-tag-scoped) checkpoint path, corrected above. **This is the
-corrected script behaving exactly as designed**: it refused to fabricate
-a generated-data score for a checkpoint it couldn't find, and said so
-explicitly ("No generated-data metrics were fabricated") rather than
-silently producing a number. Not yet re-attempted with the corrected
-path -- next step, not done here.
+**Corrected `mentor_macro_f1` re-evaluation — COMPLETE, real GPU numbers**:
+the first attempt hit `[BLOCKED] Stage 2 (evaluate on generated ECGs)
+needs outputs/models/diffusion_rl_selected_UNVALIDATED.pt, which doesn't
+exist on this machine` because the command used earlier in this file had
+the wrong (non-run-tag-scoped) checkpoint path. That was **this
+investigation's bug, not a new pipeline bug**, and the script behaved
+exactly as designed: it refused to fabricate a generated-data score for a
+checkpoint it couldn't find. Re-derived the correct path from
+`step07_rl_finetuning.py`'s `models_dir`/`run_tag` scoping
+(`step07_rl_finetuning.py:1131,1558`) as
+`outputs/models/stage4_finetune_v1/diffusion_rl_selected_UNVALIDATED.pt`,
+and confirmed with `find outputs/models -iname "diffusion_rl_selected*"`
+on the GPU server before re-running — it matched exactly.
+
+Re-ran the 3-rep loop against the corrected path:
+
+- rep0: generated-data macro_f1 = 0.3422 (NSTEMI F1 = 0.1308, AFIB
+  excluded per the class-exclusion fix)
+- rep1: generated-data macro_f1 = 0.6268
+- rep2: generated-data macro_f1 = 0.5424
+
+**Corrected `mentor_macro_f1` mean = 0.5038, std = 0.1193** (n=3 reps,
+iteration 1000, `stage4_finetune_v1`), vs. the original uncorrected
+`mentor_macro_f1 ≈ 0.4064, std ≈ 0.0522` (Finding 3, affected by both the
+AFIB phantom-score bug and the wrong checkpoint path). The corrected mean
+is higher and the corrected std is more than double the original --
+consistent with the NSTEMI-instability finding above (three genuinely
+different per-rep confusion patterns feeding into a noisier macro-F1
+average), not with the original run understating variance because of the
+AFIB bug specifically.
