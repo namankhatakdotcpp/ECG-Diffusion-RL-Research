@@ -208,13 +208,24 @@ def _score_kl(
 # Reward-replay override (Experiment A: diagnostic-reward-collapse discriminator)
 # ──────────────────────────────────────────────────────────────────────────────
 
+REWARD_REPLAY_MODES = ("sequential", "cyclic", "sampled")
+
+
 class RewardReplayOverride:
     """
-    Substitutes a donor class's real, already-recorded per-iteration r_diag
-    sequence onto a different (target) class's rollouts, iteration-for-
-    iteration, recomputing `total` from the SAME weighted-sum formula
-    ClinicalReward.compute uses (step06_reward_function.py:698-705) so that
-    r_morph/r_hrv/r_real/r_a3 stay real and only r_diag/total are replaced.
+    Substitutes a donor class's real, already-recorded r_diag sequence onto
+    a different (target) class's rollouts, indexed by the TARGET class's own
+    appearance order (the Nth time the target class is sampled during this
+    run consumes the donor sequence's Nth recorded value) -- NOT by global
+    training iteration and NOT by the donor's original iteration position.
+    Appearance-order-within-target-class is the only indexing that isolates
+    "the target class now sees the donor's reward trajectory" from "the
+    target class now sees whatever policy state existed when the donor was
+    originally sampled" -- the latter would confound the one variable this
+    experiment is designed to isolate. `total` is recomputed from the SAME
+    weighted-sum formula ClinicalReward.compute uses
+    (step06_reward_function.py:698-705) so that r_morph/r_hrv/r_real/r_a3
+    stay real and only r_diag/total are replaced.
 
     Purpose (Roadmap/Stage_4_Optimization/Decisions.md, "HYP/OTHER r_diag
     collapse vs. PPO instability" section): discriminate between competing
@@ -222,6 +233,26 @@ class RewardReplayOverride:
     checking whether an otherwise-healthy class (the target) collapses the
     same way when forced to see the same weak/sparse diagnostic-reward
     trace a collapsed class (the donor) actually received.
+
+    mode:
+      - "sequential" (default, what Experiment A uses): consumes the donor
+        sequence once, in its recorded order, one value per target-class
+        occurrence. Raises RuntimeError the moment the target class is
+        encountered more times than there are recorded donor values --
+        does NOT silently wrap. Safe for any run whose expected target-
+        class occurrence count stays under the donor sequence's length
+        (e.g. a 200-300 iteration smoke test drawing STTC ~1/6 of the
+        time, well under HYP's 177 recorded values).
+      - "cyclic": identical consumption order, but wraps back to index 0
+        once exhausted instead of raising. Only use for a run expected to
+        exceed the donor sequence's length -- must be selected explicitly.
+      - "sampled": on each target-class occurrence, draws one value i.i.d.
+        (with replacement) from the donor sequence's empirical
+        distribution, NOT in its recorded order -- a separate ablation to
+        distinguish "the trajectory's shape/order matters" from "only the
+        marginal distribution matters." Uses its own seeded RNG, isolated
+        from the main per-iteration class-sampling RNG in train() so the
+        two don't consume from (and perturb) the same stream.
 
     Strictly additive: only constructed and only consulted when both
     --reward-replay-source-csv and --reward-replay-target-class are passed;
@@ -237,7 +268,15 @@ class RewardReplayOverride:
         source_class: str,
         target_class: str,
         weights:      dict[str, float],
+        mode:         str = "sequential",
+        seed:         int = 0,
+        log=None,
     ) -> None:
+        if mode not in REWARD_REPLAY_MODES:
+            raise ValueError(
+                f"[FATAL] --reward-replay-mode must be one of "
+                f"{REWARD_REPLAY_MODES}, got {mode!r}."
+            )
         if not source_csv.exists():
             raise FileNotFoundError(
                 f"[FATAL] --reward-replay-source-csv does not exist: {source_csv}"
@@ -256,13 +295,69 @@ class RewardReplayOverride:
         self.target_class = target_class
         self.weights       = weights
         self.sequence      = sequence
-        self._idx          = 0
+        self.mode          = mode
+        self.seed          = seed
+        self.log           = log
+        self._rng               = np.random.default_rng(seed)
+        self._target_occurrences = 0
+
+        if self.log is not None:
+            self.log.info(
+                "===============================\n"
+                "Reward Replay Configuration\n"
+                "===============================\n"
+                f"source csv      : {source_csv}\n"
+                f"source class    : {source_class}\n"
+                f"target class    : {target_class}\n"
+                f"mode            : {mode}\n"
+                f"sequence length : {len(sequence)}\n"
+                f"seed            : {seed if mode == 'sampled' else 'n/a'}\n"
+                "==============================="
+            )
+            if mode == "sampled":
+                arr = np.asarray(sequence, dtype=float)
+                self.log.info(
+                    "Replay source statistics\n"
+                    f"count = {arr.size}\n"
+                    f"mean  = {float(arr.mean()):.5f}\n"
+                    f"std   = {float(arr.std()):.5f}\n"
+                    f"min   = {float(arr.min()):.5f}\n"
+                    f"max   = {float(arr.max()):.5f}"
+                )
 
     def maybe_override(self, reward_dict: dict, class_name: str) -> dict:
         if class_name != self.target_class:
             return reward_dict
-        replayed_r_diag = self.sequence[self._idx % len(self.sequence)]
-        self._idx += 1
+
+        n = self._target_occurrences
+        self._target_occurrences += 1
+
+        if self.mode == "sampled":
+            replayed_r_diag = float(self._rng.choice(self.sequence))
+        else:
+            if n >= len(self.sequence):
+                if self.mode == "sequential":
+                    raise RuntimeError(
+                        f"[FATAL] Reward-replay exhausted: target class "
+                        f"{self.target_class!r} has now been sampled "
+                        f"{n + 1} times but only {len(self.sequence)} "
+                        f"{self.source_class!r} r_diag values were recorded "
+                        f"in the source CSV. mode='sequential' does not wrap "
+                        f"by design -- pass --reward-replay-mode cyclic if "
+                        f"this run is intended to exceed the donor sequence's "
+                        f"length, or shorten --n-iterations."
+                    )
+                idx = n % len(self.sequence)   # mode == "cyclic"
+            else:
+                idx = n
+            replayed_r_diag = self.sequence[idx]
+
+        if self.log is not None and (n + 1) % 25 == 0:
+            self.log.info(
+                f"[REWARD REPLAY] {self.target_class} overrides consumed = "
+                f"{n + 1} / {len(self.sequence)} (mode={self.mode})"
+            )
+
         w = self.weights
         total = (
             w.get("morph", 0.3) * reward_dict["r_morph"]
@@ -1150,6 +1245,7 @@ def train(
     reward_replay_source_csv: Optional[str] = None,
     reward_replay_target_class: Optional[str] = None,
     reward_replay_source_class: str = "HYP",
+    reward_replay_mode: str = "sequential",
 ) -> float:
     """
     smoke_test=True runs a short (`rl.smoke_test_iterations`, default 10)
@@ -1171,14 +1267,17 @@ def train(
     see the "Output isolation" block below for exactly what that covers.
 
     reward_replay_source_csv / reward_replay_target_class /
-    reward_replay_source_class: Experiment A (RewardReplayOverride, see
-    class above) -- when both source_csv and target_class are set,
-    `reward_replay_source_class`'s (default "HYP") real per-iteration
-    r_diag sequence from an existing rl_training_log.csv is replayed onto
-    every rollout of `reward_replay_target_class` instead of that class's
-    own real diagnostic reward. Both flags must be set together or
-    neither -- this is validated below and fails fast, not silently.
-    Leaving both unset (the default) reproduces prior behavior exactly.
+    reward_replay_source_class / reward_replay_mode: Experiment A
+    (RewardReplayOverride, see class above) -- when both source_csv and
+    target_class are set, `reward_replay_source_class`'s (default "HYP")
+    real r_diag sequence from an existing rl_training_log.csv is replayed
+    onto `reward_replay_target_class`'s rollouts instead of that class's
+    own real diagnostic reward, indexed by the target class's own
+    appearance order (see RewardReplayOverride's docstring for why this
+    indexing, not global iteration, is the one that isolates the intended
+    variable). Both flags must be set together or neither -- this is
+    validated below and fails fast, not silently. Leaving both unset (the
+    default) reproduces prior behavior exactly.
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     log.info(f"Device: {device}")
@@ -1288,12 +1387,16 @@ def train(
             source_class=reward_replay_source_class,
             target_class=reward_replay_target_class,
             weights=reward_fn.weights,
+            mode=reward_replay_mode,
+            seed=int(cfg.seeds[0]),
+            log=log,
         )
         log.warning(
             f"[REWARD REPLAY ACTIVE] target_class={reward_replay_target_class} "
             f"will have its r_diag/total replaced with {reward_replay_source_class}'s "
             f"real recorded sequence ({len(reward_override.sequence)} values) from "
-            f"{reward_replay_source_csv} -- this is NOT a normal training run."
+            f"{reward_replay_source_csv}, mode={reward_replay_mode!r} -- this is "
+            f"NOT a normal training run."
         )
 
     # ── Optimiser ─────────────────────────────────────────────────────────────
@@ -1798,6 +1901,16 @@ def main() -> None:
              "sequence is replayed onto --reward-replay-target-class. "
              "Default HYP (Experiment A's original design).",
     )
+    parser.add_argument(
+        "--reward-replay-mode", type=str, default="sequential",
+        choices=list(REWARD_REPLAY_MODES),
+        help="How the donor sequence is consumed (see RewardReplayOverride): "
+             "'sequential' (default, Experiment A) consumes it once in "
+             "recorded order and raises if the target class is sampled more "
+             "times than there are donor values; 'cyclic' wraps instead of "
+             "raising; 'sampled' draws i.i.d. from the donor's empirical "
+             "distribution, ignoring recorded order (a separate ablation).",
+    )
     args = parser.parse_args()
 
     cfg = load_config()
@@ -1810,6 +1923,7 @@ def main() -> None:
         reward_replay_source_csv=args.reward_replay_source_csv,
         reward_replay_target_class=args.reward_replay_target_class,
         reward_replay_source_class=args.reward_replay_source_class,
+        reward_replay_mode=args.reward_replay_mode,
     )
     if args.smoke_test:
         print("✓ Smoke test complete — see outputs/results/smoke_test_report.json")
