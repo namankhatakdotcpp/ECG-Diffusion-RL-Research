@@ -205,6 +205,79 @@ def _score_kl(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Reward-replay override (Experiment A: diagnostic-reward-collapse discriminator)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class RewardReplayOverride:
+    """
+    Substitutes a donor class's real, already-recorded per-iteration r_diag
+    sequence onto a different (target) class's rollouts, iteration-for-
+    iteration, recomputing `total` from the SAME weighted-sum formula
+    ClinicalReward.compute uses (step06_reward_function.py:698-705) so that
+    r_morph/r_hrv/r_real/r_a3 stay real and only r_diag/total are replaced.
+
+    Purpose (Roadmap/Stage_4_Optimization/Decisions.md, "HYP/OTHER r_diag
+    collapse vs. PPO instability" section): discriminate between competing
+    explanations for HYP/OTHER's uncorrelated-with-PPO r_diag collapse by
+    checking whether an otherwise-healthy class (the target) collapses the
+    same way when forced to see the same weak/sparse diagnostic-reward
+    trace a collapsed class (the donor) actually received.
+
+    Strictly additive: only constructed and only consulted when both
+    --reward-replay-source-csv and --reward-replay-target-class are passed;
+    with neither flag set, `train()` never constructs this class and
+    collect_rollouts/grpo_update's `if self.reward_override is not None`
+    checks are never true, so behavior is unchanged from before this class
+    existed.
+    """
+
+    def __init__(
+        self,
+        source_csv:   Path,
+        source_class: str,
+        target_class: str,
+        weights:      dict[str, float],
+    ) -> None:
+        if not source_csv.exists():
+            raise FileNotFoundError(
+                f"[FATAL] --reward-replay-source-csv does not exist: {source_csv}"
+            )
+        sequence: list[float] = []
+        with open(source_csv, newline="") as f:
+            for row in csv.DictReader(f):
+                if row["class"] == source_class:
+                    sequence.append(float(row["r_diag"]))
+        if not sequence:
+            raise ValueError(
+                f"[FATAL] No rows with class == {source_class!r} found in "
+                f"{source_csv} -- refusing to replay an empty sequence."
+            )
+        self.source_class = source_class
+        self.target_class = target_class
+        self.weights       = weights
+        self.sequence      = sequence
+        self._idx          = 0
+
+    def maybe_override(self, reward_dict: dict, class_name: str) -> dict:
+        if class_name != self.target_class:
+            return reward_dict
+        replayed_r_diag = self.sequence[self._idx % len(self.sequence)]
+        self._idx += 1
+        w = self.weights
+        total = (
+            w.get("morph", 0.3) * reward_dict["r_morph"]
+            + w.get("hrv",   0.3) * reward_dict["r_hrv"]
+            + w.get("real",  0.2) * reward_dict["r_real"]
+            + w.get("diag",  0.2) * replayed_r_diag
+            + w.get("a3",    0.0) * reward_dict["r_a3"]
+        )
+        out = dict(reward_dict)
+        out["r_diag"] = float(np.clip(replayed_r_diag, 0.0, 1.0))
+        out["total"]  = float(np.clip(total, 0.0, 1.0))
+        return out
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # PPO trainer (DDPO variant)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -227,6 +300,7 @@ class DDPOTrainer:
         cfg,
         device:        str,
         opt:           torch.optim.Optimizer,
+        reward_override: Optional["RewardReplayOverride"] = None,
     ) -> None:
         self.policy      = policy_model
         self.frozen      = frozen_model
@@ -237,6 +311,7 @@ class DDPOTrainer:
         self.cfg         = cfg
         self.device      = device
         self.opt         = opt
+        self.reward_override = reward_override
 
         rl = cfg.rl
         self.ppo_clip       = float(rl.ppo_clip)
@@ -314,6 +389,8 @@ class DDPOTrainer:
                     "total": 0.0, "r_morph": 0.0,
                     "r_hrv": 0.0, "r_real": 0.0, "r_diag": 0.5, "r_a3": 0.0,
                 }
+            if self.reward_override is not None:
+                reward_dict = self.reward_override.maybe_override(reward_dict, class_name)
 
             # ── Old log prob (score-matching proxy, no grad) ──────────────────
             lp_old = _score_log_prob(
@@ -454,6 +531,7 @@ class GRPOTrainer:
         cfg,
         device:        str,
         opt:           torch.optim.Optimizer,
+        reward_override: Optional["RewardReplayOverride"] = None,
     ) -> None:
         self.policy      = policy_model
         self.frozen      = frozen_model
@@ -464,6 +542,7 @@ class GRPOTrainer:
         self.cfg         = cfg
         self.device      = device
         self.opt         = opt
+        self.reward_override = reward_override
 
         rl = cfg.rl
         self.G         = int(rl.grpo_groups)
@@ -498,6 +577,8 @@ class GRPOTrainer:
             except Exception:
                 rd = {"total": 0.0, "r_morph": 0.0, "r_hrv": 0.0,
                       "r_real": 0.0, "r_diag": 0.5, "r_a3": 0.0}
+            if self.reward_override is not None:
+                rd = self.reward_override.maybe_override(rd, class_name)
             reward_dicts.append(rd)
 
         rewards    = torch.tensor([rd["total"] for rd in reward_dicts], device=self.device)
@@ -1066,6 +1147,9 @@ def train(
     cfg, log, smoke_test: bool = False,
     n_iterations_override: Optional[int] = None,
     run_tag: Optional[str] = None,
+    reward_replay_source_csv: Optional[str] = None,
+    reward_replay_target_class: Optional[str] = None,
+    reward_replay_source_class: str = "HYP",
 ) -> float:
     """
     smoke_test=True runs a short (`rl.smoke_test_iterations`, default 10)
@@ -1085,6 +1169,16 @@ def train(
     run_tag: if set, checkpoints/logs/results this run WRITES (not the
     diffusion_best.pt it reads) go under a subdirectory named `run_tag` —
     see the "Output isolation" block below for exactly what that covers.
+
+    reward_replay_source_csv / reward_replay_target_class /
+    reward_replay_source_class: Experiment A (RewardReplayOverride, see
+    class above) -- when both source_csv and target_class are set,
+    `reward_replay_source_class`'s (default "HYP") real per-iteration
+    r_diag sequence from an existing rl_training_log.csv is replayed onto
+    every rollout of `reward_replay_target_class` instead of that class's
+    own real diagnostic reward. Both flags must be set together or
+    neither -- this is validated below and fails fast, not silently.
+    Leaving both unset (the default) reproduces prior behavior exactly.
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     log.info(f"Device: {device}")
@@ -1179,6 +1273,29 @@ def train(
     )
     log.info("Reward function ready.")
 
+    # ── Reward-replay override (Experiment A, optional) ──────────────────────
+    if bool(reward_replay_source_csv) != bool(reward_replay_target_class):
+        raise SystemExit(
+            "[FATAL] --reward-replay-source-csv and --reward-replay-target-class "
+            "must both be set or both be omitted -- got "
+            f"source_csv={reward_replay_source_csv!r}, "
+            f"target_class={reward_replay_target_class!r}."
+        )
+    reward_override = None
+    if reward_replay_source_csv:
+        reward_override = RewardReplayOverride(
+            source_csv=Path(reward_replay_source_csv),
+            source_class=reward_replay_source_class,
+            target_class=reward_replay_target_class,
+            weights=reward_fn.weights,
+        )
+        log.warning(
+            f"[REWARD REPLAY ACTIVE] target_class={reward_replay_target_class} "
+            f"will have its r_diag/total replaced with {reward_replay_source_class}'s "
+            f"real recorded sequence ({len(reward_override.sequence)} values) from "
+            f"{reward_replay_source_csv} -- this is NOT a normal training run."
+        )
+
     # ── Optimiser ─────────────────────────────────────────────────────────────
     rl  = cfg.rl
     opt = torch.optim.AdamW(
@@ -1202,6 +1319,7 @@ def train(
         cfg=cfg,
         device=device,
         opt=opt,
+        reward_override=reward_override,
     )
     if algorithm == "ppo":
         trainer = DDPOTrainer(**trainer_kwargs)
@@ -1662,6 +1780,24 @@ def main() -> None:
              "that reuses the same iteration numbers. Still reads "
              "diffusion_best.pt from the untagged models dir.",
     )
+    parser.add_argument(
+        "--reward-replay-source-csv", type=str, default=None,
+        help="Experiment A (see RewardReplayOverride): path to an existing "
+             "rl_training_log.csv to replay a class's real r_diag sequence "
+             "from. Must be set together with --reward-replay-target-class.",
+    )
+    parser.add_argument(
+        "--reward-replay-target-class", type=str, default=None,
+        help="Class whose rollouts get --reward-replay-source-class's replayed "
+             "r_diag substituted in place of its own real diagnostic reward. "
+             "Must be set together with --reward-replay-source-csv.",
+    )
+    parser.add_argument(
+        "--reward-replay-source-class", type=str, default="HYP",
+        help="Class in --reward-replay-source-csv whose recorded r_diag "
+             "sequence is replayed onto --reward-replay-target-class. "
+             "Default HYP (Experiment A's original design).",
+    )
     args = parser.parse_args()
 
     cfg = load_config()
@@ -1671,6 +1807,9 @@ def main() -> None:
     best_reward = train(
         cfg, log, smoke_test=args.smoke_test,
         n_iterations_override=args.n_iterations, run_tag=args.run_tag,
+        reward_replay_source_csv=args.reward_replay_source_csv,
+        reward_replay_target_class=args.reward_replay_target_class,
+        reward_replay_source_class=args.reward_replay_source_class,
     )
     if args.smoke_test:
         print("✓ Smoke test complete — see outputs/results/smoke_test_report.json")
