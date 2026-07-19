@@ -1870,3 +1870,125 @@ could plausibly reverse the ordering. If this comparison needs to
 support a real decision (e.g. reverting the RL base architecture choice),
 it needs a larger n and/or a paired-seed design, not a re-reading of
 these 20 numbers.
+
+## HYP/OTHER `r_diag` collapse vs. PPO instability -- CONFIRMED not PPO, root mechanism NOT YET CONFIRMED
+
+**Question**: is the HYP/OTHER diagnostic-reward (`r_diag`) collapse
+recorded above (`stage4_finetune_v1` result vs. pre-registered criteria:
+FAILURE) caused by PPO instability -- the same mechanism as Gate 3's
+iter=13 episode (transient `grad_norm`/KL spike, self-corrected) -- or
+is PPO healthy throughout, pointing at some other mechanism instead (as
+Gate 3's separate iter 166-215 episode already showed can happen)?
+
+**Method**: read the full 1000-iteration `logs/stage4_finetune_v1/
+rl_training_log.csv` (gitignored, not tracked in this repo; copied from
+the GPU server for this pass, 1001 lines confirmed = 1 header + 1000
+data rows, not truncated). For each of the 10 rolling 100-iteration
+blocks (1-100, ..., 901-1000), isolated rows where `class` is `HYP` or
+`OTHER`, flagged rows as "collapsed" where `r_diag < 0.05`, and checked
+**per-iteration** (not per-block) whether that same row's `kl > 0.06` or
+`grad_norm > 0.15` (Gate 3's healthy-baseline ceilings). A block-level
+"was there any spike anywhere in this window" test was tried first and
+rejected -- `grad_norm` has isolated transient spikes in nearly every
+block, including clearly-healthy ones (e.g. block 1-100's `grad_norm`
+max of 0.5227 co-occurs with HYP/OTHER `r_diag` sitting at 0.35/0.45,
+nowhere near collapsed), so a block-max test doesn't discriminate.
+Only same-iteration co-occurrence is a meaningful correlation check,
+consistent with how Gate 3's two episodes were originally distinguished.
+
+**Result**:
+
+| Block | HYP r_diag mean | HYP collapsed / w-spike / w/o-spike | OTHER r_diag mean | OTHER collapsed / w-spike / w/o-spike |
+|---|---|---|---|---|
+| 1-100 | 0.3472 | 1 / 1 / 0 | 0.4495 | 0 / 0 / 0 |
+| 101-200 | 0.2403 | 6 / 0 / 6 | 0.5112 | 0 / 0 / 0 |
+| 201-300 | 0.2713 | 3 / 0 / 3 | 0.5517 | 0 / 0 / 0 |
+| 301-400 | 0.2493 | 2 / 0 / 2 | 0.4469 | 2 / 1 / 1 |
+| 401-500 | 0.0154 | 15 / 1 / 14 | 0.0292 | 14 / 0 / 14 |
+| 501-600 | 0.0118 | 12 / 0 / 12 | 0.0448 | 15 / 1 / 14 |
+| 601-700 | 0.0578 | 13 / 0 / 13 | 0.0061 | 17 / 0 / 17 |
+| 701-800 | 0.1418 | 13 / 1 / 12 | 0.0131 | 15 / 0 / 15 |
+| 801-900 | 0.0302 | 16 / 0 / 16 | 0.0575 | 12 / 0 / 12 |
+| 901-1000 | 0.0568 | 4 / 0 / 4 | 0.0095 | 13 / 0 / 13 |
+
+Whole-run `kl`: mean=0.0098, max=0.1436. Whole-run `grad_norm`:
+mean=0.0696, max=0.6104 -- both stay inside Gate 3's healthy baseline
+range (`kl` 0.003-0.06, `grad_norm` 0.05-0.15) for the entire run on
+average, including during the collapsed blocks.
+
+**Recovery check**: neither class recovers by the final block. HYP's
+901-1000 mean is 0.0568 -- still near-zero, with the same brief noisy
+bumps already on record in the last-10 values (`0.114, 0.062, 0.081,
+0.157`) but never returning to its pre-collapse baseline (~0.25-0.35 in
+blocks 1-400). OTHER's 901-1000 mean is 0.0095 -- the lowest of any
+block in the entire run, with no bumps at all through the very last
+iteration.
+
+**CONFIRMED**: no consistent evidence links the HYP/OTHER collapse to
+PPO instability. Summing this table's per-block counts: 85 total
+collapsed HYP rows (3 co-occurring with a same-iteration `kl`/`grad_norm`
+spike) and 88 total collapsed OTHER rows (2 co-occurring) -- combined
+173 collapsed rows, 5 spike-correlated, i.e. 5/173 (~2.9%). That is
+essentially noise-level co-occurrence, not a pattern -- a real
+PPO-instability-driven collapse would show a large majority of collapsed
+rows co-occurring with a spike, not 1 in 35. Whole-run `kl` and
+`grad_norm` stay within Gate 3's healthy range throughout, including
+during the worst collapsed blocks. This is a repeat of Gate 3's iter
+166-215 episode (stuck signal, PPO healthy) at the full 1000-iteration
+scale, not a repeat of Gate 3's iter=13 episode (transient PPO noise) --
+except that unlike iter 166-215, this one does not recover by run's end.
+
+**NOT YET CONFIRMED -- explicit open question, not a finding**: this
+result shifts attention away from PPO instability and toward mechanisms
+affecting the diagnostic reward signal itself, but does **not** by
+itself identify which mechanism. Do not write "TRTR classifier
+reliability is the root cause" based on this section alone. Candidate
+mechanisms, none yet isolated from the others by a dedicated experiment:
+- **Classifier reliability**: HYP's TRTR `per_class_f1 = 0.3755` (cited
+  earlier in this file) is a real data point and the leading candidate,
+  but citing a weak F1 score is not the same as running an experiment
+  that shows the F1 score is *causing* the collapse specifically.
+- **Reward-weighting interaction**: the diagnostic term's weight (0.40)
+  could be getting swamped by other reward components specifically for
+  these two classes, for reasons unrelated to classifier quality.
+- **Reward sparsity**: HYP/OTHER may simply receive a sparser or noisier
+  reward signal by construction, independent of classifier accuracy.
+- **A repeat of the already-documented conditioning-collapse /
+  channel-capacity bottleneck**: HYP and OTHER have minimal training
+  support (16 and 2 sequences respectively, per this project's Stage 3
+  investigation) -- the same shape of problem as the five-experiment
+  ablation report's finding that NORM (231 sequences, not sparse) still
+  collapsed identically to OTHER (2 sequences). If that same
+  channel-capacity mechanism is recurring here, it would argue *against*
+  classifier reliability as the (sole) cause and toward an architectural
+  explanation already identified elsewhere in this project, not a new
+  one. This has NOT been checked here and must not be assumed either way.
+- **One partial, non-conclusive data point on this last candidate**: the
+  table above shows HYP/OTHER's `r_diag` sitting well above baseline in
+  blocks 1-400 (HYP ~0.25-0.35, OTHER ~0.44-0.55) before collapsing in
+  block 401-500 onward -- i.e. the signal was not near-zero from the
+  very start of training. This is *some* evidence against a pure
+  from-the-start channel-capacity story (which might predict collapse
+  from iteration 1), but it is equally consistent with a
+  channel-capacity bottleneck that only manifests after the policy
+  drifts far enough from its pretrained initialization -- this
+  observation does not resolve the question and should not be read as
+  ruling out the channel-capacity explanation.
+
+No experiment run so far isolates which of these candidates is
+responsible. This must be resolved before prioritizing either
+reward-reweighting/classifier-retraining work or a return to the
+architectural/channel-capacity investigation over the other.
+
+**Implication for next steps**: PPO hyperparameter tuning (clip ratio,
+KL coefficient, learning rate, number of PPO epochs) is deprioritized as
+a next step given this evidence -- PPO itself is not implicated. The
+next diagnostic (not yet run) should attempt to distinguish
+reward-weighting/sparsity/classifier-reliability from a repeat of the
+conditioning-collapse channel-capacity bottleneck -- for example, by
+checking whether a well-represented class's collapse rate looks similar
+if artificially given a comparably weak/sparse reward signal, or by a
+closer inspection of exactly when in training HYP/OTHER's `r_diag` first
+departs from baseline and whether that timing lines up with any other
+per-class signal already logged (e.g. `contrib_diag`, `advantage_std`)
+rather than looking like a sudden regime change.
