@@ -1930,11 +1930,12 @@ collapsed HYP rows (3 co-occurring with a same-iteration `kl`/`grad_norm`
 spike) and 88 total collapsed OTHER rows (2 co-occurring) -- combined
 173 collapsed rows, 5 spike-correlated, i.e. 5/173 (~2.9%). That is
 essentially noise-level co-occurrence, not a pattern -- a real
-PPO-instability-driven collapse would show a large majority of collapsed
-rows co-occurring with a spike, not 1 in 35. Whole-run `kl` and
+PPO-instability-driven collapse would be expected to show substantially
+higher co-occurrence between collapsed r_diag values and elevated
+KL/gradient-norm measurements than the observed 5/173 (~2.9%). Whole-run `kl` and
 `grad_norm` stay within Gate 3's healthy range throughout, including
-during the worst collapsed blocks. This is a repeat of Gate 3's iter
-166-215 episode (stuck signal, PPO healthy) at the full 1000-iteration
+during the worst collapsed blocks. This most closely resembles Gate 3's
+iter 166-215 episode (stuck signal, PPO healthy) at the full 1000-iteration
 scale, not a repeat of Gate 3's iter=13 episode (transient PPO noise) --
 except that unlike iter 166-215, this one does not recover by run's end.
 
@@ -1954,15 +1955,36 @@ mechanisms, none yet isolated from the others by a dedicated experiment:
 - **Reward sparsity**: HYP/OTHER may simply receive a sparser or noisier
   reward signal by construction, independent of classifier accuracy.
 - **A repeat of the already-documented conditioning-collapse /
-  channel-capacity bottleneck**: HYP and OTHER have minimal training
-  support (16 and 2 sequences respectively, per this project's Stage 3
-  investigation) -- the same shape of problem as the five-experiment
-  ablation report's finding that NORM (231 sequences, not sparse) still
-  collapsed identically to OTHER (2 sequences). If that same
-  channel-capacity mechanism is recurring here, it would argue *against*
-  classifier reliability as the (sole) cause and toward an architectural
-  explanation already identified elsewhere in this project, not a new
-  one. This has NOT been checked here and must not be assumed either way.
+  channel-capacity bottleneck**: remains a plausible candidate, but a
+  correction is needed on its evidentiary basis. An earlier draft of this
+  section cited a "NORM=231, STTC=50, CD=45, MI=36, HYP=16, OTHER=2"
+  per-class training population, framed as ruling out simple data
+  imbalance (NORM well-represented at 231, still collapsing identically
+  to OTHER's 2). **That specific population is the exact claim
+  `Roadmap/Stage_0_Pipeline_Audit/Reports/Pipeline_Code_Audit.md` Finding
+  14 (CRITICAL) flags as having no code-path foundation anywhere in this
+  repository** -- exhaustively searched (`config.yaml`, every `step0X`
+  script, full git history across all branches) and independently
+  contradicted by direct runtime-benchmarking evidence from an unrelated
+  earlier session. That audit's disposition: "no number from that report
+  should be cited... until independently re-derived from a real run in
+  this repository." The 231/50/45/16/2 figures are therefore **retired
+  from this project's evidence base** and must not be re-cited.
+  The verified real per-class training counts, read directly from
+  `outputs/processed/class_counts.json` (produced by
+  `step03_eda_and_class_mapping.py` against the actual ~17,418-record
+  training population that same audit confirmed) are: NORM=7269,
+  MI=3406, STTC=3404, CD=2495, **HYP=505, OTHER=254**. HYP and OTHER are
+  still the two smallest classes by a wide margin, but they are minority
+  classes in the hundreds, not the near-singleton counts (16, 2)
+  previously assumed -- this meaningfully weakens (does not eliminate) a
+  pure data-scarcity framing of the channel-capacity hypothesis, and
+  correspondingly makes reward quality, classifier calibration, and
+  reward weighting relatively more plausible than the channel-capacity
+  framing looked under the retired numbers. Whether a channel-capacity
+  mechanism unrelated to raw per-class count (e.g. representational
+  interference from conditioning on 6 classes generally) is still at
+  play has NOT been checked here and must not be assumed either way.
 - **One partial, non-conclusive data point on this last candidate**: the
   table above shows HYP/OTHER's `r_diag` sitting well above baseline in
   blocks 1-400 (HYP ~0.25-0.35, OTHER ~0.44-0.55) before collapsing in
