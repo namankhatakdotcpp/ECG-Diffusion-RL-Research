@@ -1793,3 +1793,80 @@ consistent with the NSTEMI-instability finding above (three genuinely
 different per-rep confusion patterns feeding into a noisier macro-F1
 average), not with the original run understating variance because of the
 AFIB bug specifically.
+
+## Stage 3 vs Stage 4 -- Corrected 10-Seed Comparison -- mean difference NOT statistically distinguishable from noise (Welch's t, p=0.24)
+
+**SUPERSEDES**: the `0.3421` Stage 3 (S3-001) figure cited earlier in
+this file (top of file, RL-base-architecture selection justification;
+also `Stage3_Comparison.{csv,md}`) and the n=3 `mentor_macro_f1 = 0.5038
+± 0.1193` Stage 4 figure recorded immediately above. Both prior entries
+are left in place, unedited, per this project's preserve-historical-raw-
+results rule -- the numbers below are a *new, wider-n* re-evaluation, not
+a correction overwriting those runs' raw data.
+
+**What changed and why**: the n=3 Stage 4 recompute above had std=0.1193
+on a mean of 0.5038 -- a ~±0.27 range at even a loose confidence bound,
+too noisy to compare against anything. Separately, Stage 3's cited
+`0.3421` was traced (see "Stage 3 macro-F1 blast radius" section above)
+to the same AFIB-phantom-score-affected code path as Stage 4, but was
+never itself recomputed. Both gaps closed here: Stage 3's S3-001
+checkpoint (`Roadmap/Stage_3_Architecture_Improvements/Results/S3-001/
+checkpoints/S3-001_best.pt` -- the real path, not the guessed
+`outputs/models/stage3_candidates/S3-001/diffusion_best.pt` that the
+first recompute attempt used and which correctly hit `[BLOCKED]` with
+zero fabricated output) and Stage 4's `stage4_finetune_v1/
+diffusion_rl_selected_UNVALIDATED.pt` were both re-run at n=10 seeds
+(`42..51`), same protocol as the n=3 runs (one `classification_validation.py`
+invocation per seed, separate `--out-dir` per seed, nothing overwritten,
+mean/std computed post-hoc from the resulting JSONs). Every one of the 20
+resulting `classifier_generated_eval.json` files was checked field-by-
+field for `excluded_classes == ["AFIB"]` before averaging -- confirmed
+uniform across all 20 runs, so no seed silently mixed a
+differently-excluded-class result into either mean.
+
+| seed | Stage 3 (S3-001) macro_f1 | Stage 4 (`stage4_finetune_v1`) macro_f1 |
+|---|---|---|
+| 42 | 0.3421 | 0.3422 |
+| 43 | 0.4612 | 0.6268 |
+| 44 | 0.4547 | 0.5424 |
+| 45 | 0.5185 | 0.5443 |
+| 46 | 0.5025 | 0.4894 |
+| 47 | 0.4994 | 0.5611 |
+| 48 | 0.4751 | 0.4004 |
+| 49 | 0.4622 | 0.5101 |
+| 50 | 0.5044 | 0.4993 |
+| 51 | 0.5201 | 0.6245 |
+| **mean** | **0.4740** | **0.5141** |
+| **sample std** | **0.0523** | **0.0895** |
+
+**The original `0.3421` was a single seed (seed 42), not a mean.** With
+n=10, seed 42 turns out to be the low outlier of Stage 3's own
+distribution (min=0.3421, max=0.5201) -- the figure used at the top of
+this file to help justify S3-001 as the RL base architecture was, by
+chance, the lowest of the ten values that checkpoint actually produces
+across seeds, not a representative central estimate.
+
+**Welch's t-test (unequal variance), computed locally from the 20 values
+above, no GPU needed**: t = 1.221, df ≈ 14.49 (Welch-Satterthwaite),
+two-tailed p ≈ 0.241. **Plain-English: at n=10 per group, a mean
+difference of 0.0401 (Stage 4 higher) is well within what sampling noise
+alone would produce -- this is not a statistically distinguishable
+difference at any conventional threshold (0.05 or even 0.10).** The
+two distributions overlap substantially: Stage 4's worst seed (0.3422)
+lands almost exactly on Stage 3's worst seed (0.3421), and Stage 4's
+sample std (0.0895) is ~1.7x Stage 3's (0.0523) -- Stage 4 is not just
+higher on average, it is also noisier, which is part of why the mean gap
+doesn't clear significance despite equal sample sizes.
+
+**Conclusion, calibrated to what the t-test actually shows**: the
+corrected data show a **modest, not statistically confirmed** advantage
+for Stage 4 over Stage 3's S3-001 on generated-data macro-F1. Do not
+write "Stage 4 outperforms Stage 3" or "confirmed improvement" into any
+downstream report on the strength of this comparison alone -- the honest
+statement is that the point estimates differ by 0.04 in Stage 4's favor,
+but n=10 per group cannot rule out that this difference is noise, and
+Stage 4's own variance is high enough that a different set of 10 seeds
+could plausibly reverse the ordering. If this comparison needs to
+support a real decision (e.g. reverting the RL base architecture choice),
+it needs a larger n and/or a paired-seed design, not a re-reading of
+these 20 numbers.
