@@ -369,6 +369,12 @@ def main() -> None:
     set_seed(args.seed)
 
     ckpt_path = Path(args.ckpt) if args.ckpt else Path(cfg.paths.outputs.models) / "diffusion_best.pt"
+    if not ckpt_path.exists():
+        raise SystemExit(
+            f"[FATAL] --ckpt path does not exist: {ckpt_path}\n"
+            f"  Refusing to run Stage 1 (real-data classifier training) only to hit\n"
+            f"  Stage 2 blocked on a missing checkpoint. Fix the path and re-run."
+        )
     out_dir   = Path(args.out_dir) if args.out_dir else Path(cfg.paths.outputs.results).parent / "mentor_review" / "classification_validation"
     snapshot_before_write(out_dir)
     run(ckpt_path, out_dir, cfg, args.seed, log, guidance_scale=args.guidance_scale)
