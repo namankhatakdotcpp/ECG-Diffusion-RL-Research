@@ -2014,3 +2014,16 @@ closer inspection of exactly when in training HYP/OTHER's `r_diag` first
 departs from baseline and whether that timing lines up with any other
 per-class signal already logged (e.g. `contrib_diag`, `advantage_std`)
 rather than looking like a sudden regime change.
+
+## Experiment A — Complete (2026-07-20)
+
+Decision: Experiment A (HYP->STTC reward replay, sequential and cyclic
+modes) is complete. Replay implementation validated mathematically and
+behaviorally. The experiment did not provide evidence supporting the
+reward-hacking/instability hypothesis under the tested training
+trajectory -- see `docs/experimentA_summary.md` for full results.
+Proceeding to evaluate remaining candidate mechanisms rather than
+prioritizing reward-quality-alone as the primary explanation for
+HYP/OTHER collapse. This conclusion is based on a single-seed experiment
+and may be revisited if multi-seed evidence becomes warranted (e.g., for
+publication).
