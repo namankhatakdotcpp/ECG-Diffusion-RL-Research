@@ -1,7 +1,22 @@
 # Investigation 02: OTHER Class Permanent r_diag Collapse — Log-Based Analysis
 
 **Date:** 2026-07-21
-**Status:** Log-analysis phase complete. Root trigger not yet determined; requires future instrumentation.
+**Status:** Log-analysis phase complete. Root trigger (what specifically made
+the iteration-383 rollout/update different) was never determined — PPO
+instability was ruled out as the cause (see "Rejected / Unsupported
+Hypotheses" below), but no positive mechanism was confirmed. The only
+remaining path to resolving it is the instrumented rerun (per-rollout
+logging, "Future Work" item 3 below), which has not been run.
+
+**Deprioritized (2026-07-21, follow-up), not abandoned:** this root-cause
+question is explicitly deprioritized in favor of RL reward-design work,
+now that Investigation_03 has established which generation-quality signal
+to trust for checkpoint evaluation (see `Decisions.md`, "Gate CLOSED:
+`diffusion_rl_selected_UNVALIDATED.pt` rejection hardens..."). This is a
+conscious prioritization call, not an oversight — the instrumented rerun
+remains available as future work if the mechanism becomes load-bearing for
+the paper (e.g. if reward-design work needs to explain why a specific
+class collapses to justify a reward-shaping choice).
 
 ## Research Question
 Why does the OTHER class undergo a permanent diagnostic reward collapse during
