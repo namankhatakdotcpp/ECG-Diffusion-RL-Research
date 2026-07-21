@@ -2027,3 +2027,29 @@ prioritizing reward-quality-alone as the primary explanation for
 HYP/OTHER collapse. This conclusion is based on a single-seed experiment
 and may be revisited if multi-seed evidence becomes warranted (e.g., for
 publication).
+
+## `diffusion_rl_selected_UNVALIDATED.pt` — UNVALIDATED label gated on Investigation_03, not indefinite (2026-07-21)
+
+The `_UNVALIDATED` rename (see the "Renamed the selected checkpoint..."
+entry above) has carried no explicit removal condition since Stage 4
+completed. Nothing in `Investigation_02_OTHER_Collapse_Mechanism.md`
+gives grounds to lift it -- if anything, that investigation's unreconciled
+divergence between `classification_validation.py` (generated macro F1
+declined 0.3339 -> 0.2149, checkpoints 370 -> 380) and the TSTR path
+(macro and OTHER F1 both improved over the same interval) is a reason to
+keep the label, not remove it.
+
+**Decision**: the label stays until `Investigation_03_TSTR_vs_
+ClassificationValidation_Divergence.md` resolves which signal to trust.
+Two possible outcomes:
+- If Investigation_03 finds the TSTR-favorable read is the trustworthy
+  one (e.g. the classification_validation.py decline traces to a
+  pipeline artifact, sample-count/class-balance mismatch, or bug):
+  promotion of this checkpoint (or a later one) can be reconsidered under
+  that corrected signal.
+- If Investigation_03 confirms the classification_validation.py decline
+  is real: `_UNVALIDATED` stands, and the finding likely hardens into a
+  documented rejection rather than a pending question.
+
+No other event (elapsed time, additional Stage 4 iterations run, etc.)
+removes the label absent this resolution.
