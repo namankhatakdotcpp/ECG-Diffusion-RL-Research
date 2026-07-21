@@ -1,9 +1,12 @@
 # Investigation 03: TSTR vs. classification_validation.py Metric Divergence
 
 **Date:** 2026-07-21
-**Status:** Step 1 (pre-registration) and Step 2 (read-only investigation)
-complete. Stopping here per pre-registered stop condition — no fix proposed,
-no new evaluation run, no code modified.
+**Status:** Phase 1 (pre-registration + read-only investigation) complete.
+Finding 1's provenance gap subsequently resolved via filesystem timestamps.
+Phase 2 (matched-sample-count rerun) complete: outcome **UNEXPLAINED** —
+the metric divergence is not a sample-count artifact; by elimination,
+opposite transfer direction (candidate (a)) is implicated as the driver.
+Not committed.
 
 ## Research Question
 
@@ -56,7 +59,36 @@ All findings below are re-derived directly from source on this session
 (hostname `himtenduh`, the GPU server) in this pass, not carried over from
 Investigation_02 by paraphrase.
 
-### Finding 1 — Open Provenance Limitation: which checkpoint set was used cannot be independently reconstructed
+### Finding 1 — Provenance Limitation: RESOLVED for both sides (2026-07-21, follow-up)
+
+**Update:** the open half of this gap (which checkpoint set `0d42ca9`'s
+`classification_validation.py` run loaded) has since been resolved via
+filesystem timestamps and is no longer open. See "Finding 1 Resolution"
+below, added after a targeted follow-up check. The original analysis is
+kept as written beneath it for the record, since the reasoning (why this
+mattered, why it wasn't resolvable from the checkpoints/JSON alone) still
+stands — only the "cannot be confirmed" conclusion is superseded.
+
+**Finding 1 Resolution:** the filesystem mount is `relatime` (confirmed:
+`mount | grep " / "` shows `rw,relatime`), so access times are meaningful,
+not disabled. `stage4_finetune_v1/rl_ckpt_iter0370.pt`'s access time
+(`2026-07-21 10:13:38.792100903 UTC`) matches — to the same sub-second
+precision — the write time of `checkpoint_370_comparison/classifier_real_
+eval.json` (the `0d42ca9` output artifact). Same for iteration 380:
+checkpoint access `10:15:08.445185428 UTC` matches `checkpoint_380_
+comparison/classifier_real_eval.json`'s write time exactly. Both precede
+the `0d42ca9` commit (`10:25:08 UTC`) by a plausible 10-12 minutes. The
+`experimentA_reward_replay_cyclic` checkpoints show no access anywhere
+near that window — their only recorded access (`13:04:15 UTC`, identical
+for both files) is ~2h39m *after* the commit, consistent with this
+investigation's own later `torch.load` inspection calls, not the historical
+run. **Conclusion: `0d42ca9` used `stage4_finetune_v1`'s checkpoints, not
+`experimentA_reward_replay_cyclic`'s.** Combined with `13080ee`'s TSTR/TRTR
+result (which used `stage4_finetune_v1` per the explicit `--ckpt` paths in
+that run), both halves of the divergence this investigation studies are now
+confirmed to describe the same underlying model transition.
+
+### Finding 1 (original analysis, superseded conclusion retained for record) — which checkpoint set was used could not initially be reconstructed
 
 Both scripts require an explicit, existing `--ckpt` path with no silent
 fallback to a default when a bad path is given:
@@ -179,23 +211,18 @@ section.
 
 ## What Step 2 Establishes
 
-**Leading item — the investigation's premise itself carries an open
-provenance limitation (Finding 1).** Before weighing why the two metrics
-disagree, it's worth being explicit that this machine holds two genuinely
-different checkpoints under the same filenames (`rl_ckpt_iter0370.pt`/
-`0380.pt` in `stage4_finetune_v1/` vs. `experimentA_reward_replay_cyclic/`),
-and neither `0d42ca9`'s nor `13080ee`'s result records which one it
-actually loaded. A read-only cross-check against both runs' own training
-logs (above) confirms both checkpoint files are genuine and correctly
-attributed to their claimed runs, but cannot determine which one either
-past script invocation used — that remains open on both sides. This is
-**not evidence that either result used the wrong checkpoint**; it is a
-limit on how much confidence either result can carry until closed, and it
-means the two findings below should be read as "assuming both results
-describe the same `stage4_finetune_v1` transition" rather than as fully
-settled.
+**Leading item — the investigation's premise itself was, until a follow-up
+check, resting on an open provenance limitation (Finding 1) — now
+resolved.** This machine holds two genuinely different checkpoints under
+the same filenames (`rl_ckpt_iter0370.pt`/`0380.pt` in `stage4_finetune_v1/`
+vs. `experimentA_reward_replay_cyclic/`). A filesystem-timestamp check
+(Finding 1 Resolution, above) confirmed both `0d42ca9` and `13080ee`
+loaded `stage4_finetune_v1`'s checkpoints — the two results genuinely
+describe the same underlying model transition, not two unrelated runs.
+The findings below can now be read as settled on that point, not
+conditional on it.
 
-With that limitation stated, two of the three pre-registered candidates
+With premise now confirmed, two of the three pre-registered candidates
 are confirmed as real, non-exclusive contributors to the divergence itself:
 - **(a) is structurally confirmed**: the two pipelines measure opposite
   transfer directions by design (Finding 5). Disagreement between them is
@@ -208,13 +235,157 @@ are confirmed as real, non-exclusive contributors to the divergence itself:
 
 **What this does not establish:** that (a) and (c) together are sufficient
 to explain the *direction* of the disagreement (decline vs. improvement),
-as opposed to just differing magnitude or noise. Confirming that would
-require a matched-protocol rerun (same checkpoint, verified path; matched
-sample count) — out of scope for this read-only pass per the stop
-condition below.
+as opposed to just differing magnitude or noise. That question is tested
+directly in "Phase 2" below.
 
-## Stop Condition
+## Stop Condition (Phase 1 — Step 1/Step 2 read-only pass)
 
-Stopping here per instruction. Not proposing a fix, not running any new
-evaluation, not modifying either eval script. Findings above are read-only
-source/artifact inspection only.
+Stopped here at the time, per instruction. No fix proposed, no new
+evaluation run, no eval script modified. Findings above are read-only
+source/artifact inspection only. Phase 2 below is a distinct, later pass
+that does run new evaluations and does modify one eval script — see that
+section's own pre-registration and stop condition.
+
+## Phase 2 — Matched-Sample-Count Rerun (does (a)+(c) explain the direction reversal?)
+
+**Placement note:** this stays inside Investigation_03 rather than
+spinning off a new Investigation_04. Investigation_03's own research
+question ("why do these two metrics move in opposite directions?") is not
+yet answered — Phase 1 confirmed two contributing differences (transfer
+direction, sample count) but explicitly did not establish whether they are
+*sufficient* to explain the direction reversal specifically. This
+experiment answers that same question empirically rather than opening a
+new one, unlike Investigation_02 → Investigation_03 (which was a genuine
+scope change to a different research question). A new Investigation_04
+would be warranted only if this experiment's result pointed at something
+outside classification_validation.py/step05_baseline_eval.py's comparison
+entirely — it doesn't.
+
+### Pre-Registration (written before running anything)
+
+**Protocol change:** `classification_validation.py`'s Stage 2 generated-
+sample count is hardcoded to 100 (`:320`, prior to this change). Add a
+`--n-gen-samples` argument (default 100, preserving exact backward
+compatibility with `0d42ca9`) and rerun at `--n-gen-samples 500` — matching
+`step05_baseline_eval.py`'s `n_synthetic_per_class` (`config.yaml:242`) —
+against the same verified checkpoints as the `13080ee` TSTR comparison:
+`outputs/models/stage4_finetune_v1/rl_ckpt_iter0370.pt` and
+`rl_ckpt_iter0380.pt` (confirmed correct for this run — see "Finding 1
+Resolution" above).
+
+**Decision criteria, fixed before running:**
+
+Baseline to compare against: `0d42ca9`'s original n=100 result — macro F1
+0.3339 (370) → 0.2149 (380), a decline of **0.1190**.
+
+- **CONVERGED**: `|macro_f1(380) − macro_f1(370)|` at n=500 is **≤ 0.01**
+  (calibrated against Investigation_02's TSTR macro-delta noise band at
+  n=3 seeds, upper bound 0.009928 — the closest existing noise-magnitude
+  reference in this repo, acknowledging it comes from a different
+  pipeline/classifier and is an imperfect but reasonable proxy). A delta
+  this small means the original decline was consistent with sample-count-
+  driven noise, not a real signal.
+- **PARTIALLY EXPLAINED**: decline persists in the same direction (macro
+  F1 still lower at 380 than 370) with magnitude **> 0.01 and ≤ 0.06**
+  (i.e., shrinks to at most half of the original 0.1190 magnitude, but
+  exceeds the noise floor). Sample count is a partial contributor; something
+  else still plays a role.
+- **UNEXPLAINED**: decline magnitude is **> 0.06** (retains more than half
+  its original size) or the direction/magnitude is essentially unchanged
+  from the n=100 result. Sample count is not the driver of the direction;
+  the divergence is a property of the two transfer directions themselves
+  (candidate (a)) and should stand as a research finding in its own right,
+  not a bug to fix.
+
+**Scope note:** this tests candidate (c) directly. It does not separately
+isolate candidate (a) — but since sample count is now matched, if the
+decline persists, direction (not sample count) is implicated by
+elimination, which is why a dedicated (a)-only test isn't run separately.
+
+**Single seed (42), not multi-seed:** per the run commands specified for
+this experiment. This means CONVERGED/PARTIALLY EXPLAINED/UNEXPLAINED
+below is a single-point estimate, not a distribution — a caveat carried
+into the result, not resolved by it.
+
+### Code Change
+
+`--n-gen-samples` added to `classification_validation.py`'s argparse
+(default 100), threaded through `run()` into the `generate_for_class` call
+at `:320` in place of the previous hardcoded `n_samples=100`. No other
+logic touched.
+
+**Backward-compatibility spot check (run before the matched-count
+experiment):** ran the modified script with no `--n-gen-samples` flag
+(default) against `rl_ckpt_iter0370.pt`, seed 42, out-dir
+`outputs/mentor_review/spotcheck_370_default/`. Result: `macro_f1 =
+0.33387707560501684`, confusion matrix `[[27,73,0,0],[0,100,0,0],
+[1,97,2,0],[0,0,0,0]]` — **bit-for-bit identical** to `0d42ca9`'s original
+`checkpoint_370_comparison/classifier_generated_eval.json` (confirmed by
+direct JSON comparison, not just displayed-decimal rounding). The
+refactor preserves original behavior exactly.
+
+### Result
+
+Both runs used `--n-gen-samples 500`, seed 42, against the verified
+`stage4_finetune_v1` checkpoints. Confusion matrices confirmed to sum to
+500/class (Normal/STEMI/NSTEMI), 0 for excluded AFIB, matching the
+intended sample count.
+
+| Metric | Checkpoint 370 (n=500) | Checkpoint 380 (n=500) | Checkpoint 370 (n=100, `0d42ca9`) | Checkpoint 380 (n=100, `0d42ca9`) |
+|---|---|---|---|---|
+| Generated-data macro F1 | 0.326520 | 0.231804 | 0.333877 | 0.214882 |
+| Normal F1 | 0.379747 | 0.112570 | 0.421875 | 0.076190 |
+| STEMI F1 | 0.537797 | 0.513611 | 0.540541 | 0.510204 |
+| NSTEMI F1 | 0.062016 | 0.069231 | 0.039216 | 0.058252 |
+
+Macro F1 delta (380 − 370):
+- **n=500 (this experiment): −0.094716**
+- n=100 (`0d42ca9`, for reference): −0.118995
+- Shrinkage: the n=500 delta retains **79.6%** of the original n=100
+  delta's magnitude (0.094716 / 0.118995).
+
+The per-class pattern is also consistent between n=100 and n=500 — Normal
+F1 collapses sharply (0.42→0.08 at n=100; 0.38→0.11 at n=500) and drives
+most of the macro decline in both cases, while STEMI is roughly flat and
+NSTEMI moves slightly in the *opposite* direction (improves) in both runs.
+This is the same qualitative picture at 5x the sample count, not a
+different one.
+
+### Outcome Classification
+
+**UNEXPLAINED**, per the pre-registered criteria: `|delta|` at n=500
+(0.094716) is **> 0.06** — well above the "shrinks to at most half the
+original magnitude" bound for PARTIALLY EXPLAINED, let alone the ≤0.01
+CONVERGED noise floor. The decline is not a sample-count artifact:
+candidate (c) is **ruled out** as the driver of the direction reversal by
+this experiment (it remains a real, confirmed *difference* between the
+two pipelines — Finding 2 stands — but it is not what causes the opposite
+signs).
+
+**By the pre-registered elimination logic:** since the checkpoint is now
+verified identical (Finding 1 Resolution) and the sample count is now
+matched (500 = 500), and the decline persists at ~80% of its original
+magnitude, candidate (a) — the genuinely opposite transfer directions
+(train-real/test-generated vs. train-generated/test-real) — is implicated
+as the actual driver of the direction reversal, not by direct isolation
+but by having eliminated the other two candidates. This should be treated
+as a real research finding: **generated OTHER/Normal/etc. samples can
+become simultaneously *less* recognizable to a real-trained classifier
+and *more* useful as training data for a fresh classifier, over the same
+370→380 interval** — a property of what each transfer direction measures,
+not a bug or artifact in either pipeline.
+
+**Caveats carried forward, not resolved by this experiment:**
+- Single seed (42) only — this is a point estimate, not a distribution.
+  Whether the ~80%-magnitude-retained delta itself falls inside or outside
+  seed-to-seed noise at n=500 is not established; only the noise band at
+  n=100/n=3-seeds (Investigation_02) was available as a calibration
+  reference, and that was for a different pipeline/classifier.
+- This experiment does not explain *why* train-real/test-generated and
+  train-generated/test-real move oppositely — only that they do, robustly
+  to sample count. That mechanistic question remains open.
+
+## Stop Condition (Phase 2)
+
+Stop after reporting the n=500 result and its CONVERGED/PARTIALLY
+EXPLAINED/UNEXPLAINED classification. Not committing.
