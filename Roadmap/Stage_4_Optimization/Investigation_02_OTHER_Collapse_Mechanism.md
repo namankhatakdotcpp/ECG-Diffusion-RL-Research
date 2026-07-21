@@ -130,15 +130,52 @@ or (b) direct use of the TRTR classifier (6-class native taxonomy, already
 used elsewhere in Stage 4) against generated OTHER samples from both
 checkpoints.
 
+## Search for an OTHER-Capable Evaluator — No Ready-to-Run Tool Exists
+
+Searched the full evaluation surface (`mentor_eval/` and root `step*.py`
+scripts) for anything that could score OTHER-conditioned generated samples,
+verified directly from source rather than assumed:
+
+- **`classification_validation.py`** (mentor pipeline): 4-class taxonomy only
+  (Normal/STEMI/NSTEMI/AFIB). No OTHER. Already established above.
+- **`subband_similarity_metrics.py`**: also restricted to the mentor-derived
+  taxonomy -- `BOX_CLASSES = ["Normal", "STEMI", "NSTEMI"]` (line 54),
+  explicitly commented "AFIB excluded - no trained model class." This tool
+  does **not** bypass the taxonomy gap and cannot evaluate OTHER either.
+- **`step05_baseline_eval.py`'s TRTR classifier**: this is the one genuinely
+  native-taxonomy tool -- trained and evaluated over the diffusion model's own
+  6-class list (`class_names.json`: NORM/MI/STTC/CD/HYP/OTHER), confirmed by
+  its own code handling an explicit `"OTHER" in name_to_idx` case.
+  `analyze_stage4_hyp_other.py` (lines 122-129) itself already documents this
+  as the correct tool for direct HYP/OTHER evaluation, in preference to the
+  mentor pipeline.
+
+**Gap identified:** `step05_baseline_eval.py`'s `main()` takes **no `--ckpt`
+argument** -- it is hardcoded to whatever checkpoint `load_config()` resolves
+(the frozen baseline), unlike `classification_validation.py`, which already
+supports `--ckpt`. There is currently no way to point the TRTR classifier's
+generation-and-eval path at `rl_ckpt_iter0370.pt` or `rl_ckpt_iter0380.pt`
+specifically without a code change.
+
+**Conclusion:** An OTHER-capable evaluator exists in principle (the TRTR
+classifier's native 6-class taxonomy), but not as a ready-to-run tool for
+this comparison. The minimal path forward is a small, well-scoped change --
+add a `--ckpt` parameter to `step05_baseline_eval.py`, mirroring
+`classification_validation.py`'s existing pattern -- not a new experiment
+design and not an instrumented rerun.
+
 ## Future Work
-1. **Checkpoint comparison via TRTR classifier**: the mentor-pipeline
-   comparison above was attempted but is structurally unable to evaluate
-   OTHER (see above). Re-run the comparison using the TRTR classifier
-   (6-class native taxonomy) against OTHER samples generated from
-   `rl_ckpt_iter0370.pt` and `rl_ckpt_iter0380.pt`, to check whether
-   degradation was already underway before iteration 383 (weakening the
-   "sudden transition" framing) or whether both checkpoints look healthy on
-   OTHER specifically (supporting iteration 383 as the true onset).
+1. **Add `--ckpt` support to `step05_baseline_eval.py`**, then run its TRTR
+   classifier path against `rl_ckpt_iter0370.pt` and `rl_ckpt_iter0380.pt`
+   specifically, to check whether OTHER's own per-class F1 was already
+   degrading before iteration 383 (weakening the "sudden transition" framing)
+   or whether OTHER specifically looks healthy at both checkpoints
+   (supporting iteration 383 as the true onset). Given documented run-to-run
+   variance for minority classes elsewhere in this project (e.g. NSTEMI's
+   rep0/rep1/rep2 generated-F1 spread of 0.000/0.378/0.131 at iteration 1000),
+   a single-seed comparison should not be treated as conclusive on its own --
+   the same multi-seed rep structure used for the iter1000 evaluation would
+   be needed for a reliable OTHER-specific number.
 2. **Instrumented rerun**: add per-rollout logging (sample IDs, classifier
    logits/probabilities, reward components before aggregation) to identify
    the upstream trigger of the transition, if the checkpoint comparison above
