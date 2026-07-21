@@ -2053,3 +2053,37 @@ Two possible outcomes:
 
 No other event (elapsed time, additional Stage 4 iterations run, etc.)
 removes the label absent this resolution.
+
+## Gate CLOSED: `diffusion_rl_selected_UNVALIDATED.pt` rejection hardens from pending to documented (2026-07-21, follow-up)
+
+Investigation_03's Phase 2 (matched-sample-count rerun, commit `b0ce0f6`)
+resolved the gate above. Per its pre-registered decision criteria, the
+outcome was **UNEXPLAINED**: `classification_validation.py`'s macro-F1
+decline (370→380) persisted at ~80% of its original magnitude (−0.0947
+vs. −0.1190) even with generated-sample count matched to TSTR's (500 =
+500). Sample count was directly tested and ruled out as an artifact.
+
+This fires the gate's second pre-registered outcome, not the first: the
+`classification_validation.py` decline is **real**, not a pipeline
+artifact or sample-count mismatch. There is no corrected signal under
+which promotion of this checkpoint should be reconsidered.
+
+**Decision**: `diffusion_rl_selected_UNVALIDATED.pt`'s rejection is now a
+**documented, closed finding** rather than a pending question gated on
+future investigation. The checkpoint should not be promoted. This does not
+mean TSTR's improving trend is wrong — Investigation_03 also established
+(Finding 5, and the Phase 2 elimination result) that the two metrics
+measure genuinely different properties of generation quality
+(train-real/test-generated recognizability vs. train-generated/test-real
+training utility) that can move in opposite directions on the same model
+transition. The rejection stands on the real-classifier-recognizability
+decline specifically, independent of whatever TSTR shows.
+
+**Implication for reward design going forward**: a reward term built on
+TSTR-style utility alone would not have flagged this checkpoint's real
+regression. Any reward-design work building on the Mentor Classifier /
+TRTR-style real-classifier signal (the one that already gates checkpoint
+selection per `rl.checkpoint_selection.metric`, see the "Early stopping
+and checkpoint selection" entry above) remains the safer default;
+TSTR-only signals should not be treated as a sufficient proxy for
+generation quality on their own.
