@@ -29,6 +29,7 @@ Writes to:
 
 from __future__ import annotations
 
+import argparse
 import ast
 import json
 import math
@@ -207,13 +208,17 @@ def _load_real_data(cfg, log) -> dict:
 # Model loading and generation
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _load_diffusion_model(cfg, log) -> tuple:
-    """Load diffusion_best.pt → (model, diffusion, ema, class_names)."""
+def _load_diffusion_model(cfg, log, ckpt_path: Optional[str] = None) -> tuple:
+    """Load a diffusion checkpoint → (model, diffusion, ema, class_names).
+
+    Defaults to outputs/models/diffusion_best.pt if ckpt_path is not given,
+    matching this function's original behavior.
+    """
     device    = "cuda" if torch.cuda.is_available() else "cpu"
-    best_path = Path(cfg.paths.outputs.models) / "diffusion_best.pt"
+    best_path = Path(ckpt_path) if ckpt_path else Path(cfg.paths.outputs.models) / "diffusion_best.pt"
 
     if not best_path.exists():
-        log.error(f"diffusion_best.pt not found at {best_path}. Run step04 first.")
+        log.error(f"Checkpoint not found at {best_path}. Run step04 first, or check --ckpt.")
         raise FileNotFoundError(best_path)
 
     log.info(f"Loading diffusion model from {best_path} …")
@@ -1031,8 +1036,8 @@ def _save_results(
 # Main evaluation loop
 # ──────────────────────────────────────────────────────────────────────────────
 
-def evaluate(cfg, log) -> float:
-    results_dir = Path(cfg.paths.outputs.results)
+def evaluate(cfg, log, ckpt_path: Optional[str] = None, out_dir: Optional[str] = None) -> float:
+    results_dir = Path(out_dir) if out_dir else Path(cfg.paths.outputs.results)
     results_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Load real data and model ──────────────────────────────────────────────
@@ -1048,7 +1053,7 @@ def evaluate(cfg, log) -> float:
     fs = float(cfg.ptbxl.sampling_rate)
 
     log.info("Loading diffusion model …")
-    model, diffusion, ema, ckpt_classes, device = _load_diffusion_model(cfg, log)
+    model, diffusion, ema, ckpt_classes, device = _load_diffusion_model(cfg, log, ckpt_path=ckpt_path)
     # Use checkpoint's class list if available (may differ from step03 if re-run)
     if ckpt_classes != class_names:
         log.warning(f"Checkpoint class list {ckpt_classes} differs from step03 {class_names}. "
@@ -1177,11 +1182,25 @@ def evaluate(cfg, log) -> float:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Baseline/checkpoint quantitative evaluation of the diffusion model.")
+    parser.add_argument("--ckpt", type=str, default=None,
+                        help="Path to a diffusion checkpoint. Defaults to outputs/models/diffusion_best.pt.")
+    parser.add_argument("--out-dir", type=str, default=None,
+                        help="Output directory for results. Defaults to outputs/results/ (the baseline location).")
+    args = parser.parse_args()
+
     cfg = load_config()
     log = get_logger("step05_baseline_eval", cfg=cfg)
     set_seed(cfg.seeds[0])
 
-    tstr_f1 = evaluate(cfg, log)
+    if args.ckpt and not Path(args.ckpt).exists():
+        raise SystemExit(
+            f"[FATAL] --ckpt path does not exist: {args.ckpt}\n"
+            f"  Refusing to run real-data TRTR training only to hit generation\n"
+            f"  blocked on a missing checkpoint. Fix the path and re-run."
+        )
+
+    tstr_f1 = evaluate(cfg, log, ckpt_path=args.ckpt, out_dir=args.out_dir)
     print(f"✓ Baseline evaluation complete. TSTR macro F1: {tstr_f1:.3f}")
 
 
