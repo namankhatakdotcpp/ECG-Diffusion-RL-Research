@@ -164,22 +164,81 @@ add a `--ckpt` parameter to `step05_baseline_eval.py`, mirroring
 `classification_validation.py`'s existing pattern -- not a new experiment
 design and not an instrumented rerun.
 
+## TRTR Multi-Seed Checkpoint Comparison (370 vs. 380) — OTHER-Specific Result
+
+With `--ckpt` support added to `step05_baseline_eval.py`, ran its native
+6-class TRTR/TSTR path against both `rl_ckpt_iter0370.pt` and
+`rl_ckpt_iter0380.pt`, 3 seeds each (42, 123, 456), matching the multi-seed
+rep structure used elsewhere in Stage 4. Source: `baseline_metrics.json`
+under `outputs/results/checkpoint_370_trtr_eval/` and
+`outputs/results/checkpoint_380_trtr_eval/`, read in full and verified
+directly (not derived from a summarized intermediate).
+
+**Per-seed TSTR macro F1 and OTHER-class F1:**
+
+| Seed | Ckpt 370 macro | Ckpt 380 macro | Ckpt 370 OTHER | Ckpt 380 OTHER |
+|---|---|---|---|---|
+| 42  | 0.355341 | 0.367020 | 0.235955 | 0.275862 |
+| 123 | 0.338927 | 0.341882 | 0.236842 | 0.282051 |
+| 456 | 0.344609 | 0.347025 | 0.387097 | 0.387097 |
+
+**Per-seed deltas (380 − 370):**
+
+| Seed | Macro Δ | OTHER Δ |
+|---|---|---|
+| 42  | +0.011679 | +0.039907 |
+| 123 | +0.002955 | +0.045209 |
+| 456 | +0.002416 | +0.000000 |
+
+- Macro Δ: mean = 0.005683, population std = 0.004245 → range [0.001438, 0.009928]
+- OTHER Δ: mean = 0.028372, population std = 0.020178 → range [0.008194, 0.048550]
+
+**Result: the pre-registered separation criterion is not met.** OTHER's
+delta is larger on average than the general macro delta, but the two
+ranges overlap (macro's upper bound 0.009928 exceeds OTHER's lower bound
+0.008194). At n=3 seeds, this does not establish that OTHER declined by
+more than ordinary run-to-run noise already present across all classes --
+and under TSTR, OTHER did not decline at all (it improved in every seed).
+This is consistent with the documented run-to-run variance for minority
+classes elsewhere in this project (e.g. NSTEMI's rep0/rep1/rep2 spread of
+0.000/0.378/0.131 at iteration 1000). This is a real answer under TSTR
+(see Final Conclusion below), not a data shortage requiring more seeds to
+resolve; additional seeds would only be useful as optional confirmation.
+
+One data point worth flagging without over-reading it: at seed 456,
+OTHER's F1 is bit-for-bit identical between checkpoints
+(`0.3870967741935484` in both files' `raw_seeds[2].tstr_per_class_f1[5]`),
+while every other class's F1 for that same seed shifts between checkpoints
+(e.g. NORM: 0.456731 -> 0.486445). This could mean OTHER's generation
+quality was already stable/unaffected by whatever changed between 370 and
+380 for that seed -- or it could be coincidence given only 3 seeds. It does
+not change the overlap conclusion above.
+
+**What this does and does not resolve:** Unlike the earlier
+`classification_validation.py` comparison, this result *is* OTHER-specific
+(no taxonomy exclusion). Under TSTR specifically, it rules out an
+OTHER-specific decline between these checkpoints at these seeds -- OTHER
+improved in all 3 seeds and its delta range is not separable from the
+general macro delta range. It does not, however, reconcile this with
+`classification_validation.py`'s decline on a different metric; see Final
+Conclusion below for how these two results are treated jointly.
+
 ## Future Work
-1. **Add `--ckpt` support to `step05_baseline_eval.py`**, then run its TRTR
-   classifier path against `rl_ckpt_iter0370.pt` and `rl_ckpt_iter0380.pt`
-   specifically, to check whether OTHER's own per-class F1 was already
-   degrading before iteration 383 (weakening the "sudden transition" framing)
-   or whether OTHER specifically looks healthy at both checkpoints
-   (supporting iteration 383 as the true onset). Given documented run-to-run
-   variance for minority classes elsewhere in this project (e.g. NSTEMI's
-   rep0/rep1/rep2 generated-F1 spread of 0.000/0.378/0.131 at iteration 1000),
-   a single-seed comparison should not be treated as conclusive on its own --
-   the same multi-seed rep structure used for the iter1000 evaluation would
-   be needed for a reliable OTHER-specific number.
-2. **Instrumented rerun**: add per-rollout logging (sample IDs, classifier
+1. **More seeds for the 370/380 TRTR comparison** (optional confirmation,
+   not a blocker -- see Final Conclusion below, which treats this
+   investigation as closed under TSTR). At n=3, the OTHER delta range and
+   the general macro delta range overlap; additional seeds could firm up
+   that non-separation but are not required to close the OTHER-specific
+   question this investigation was scoped to answer.
+2. **New investigation**: reconcile why `classification_validation.py`
+   shows generated-macro decline (370 -> 380) while TSTR shows improvement
+   over the same interval. This is a distinct question from the original
+   OTHER-collapse-mechanism investigation (see Final Conclusion below) and
+   should be tracked separately rather than as follow-up here.
+3. **Instrumented rerun**: add per-rollout logging (sample IDs, classifier
    logits/probabilities, reward components before aggregation) to identify
-   the upstream trigger of the transition, if the checkpoint comparison above
-   does not resolve it.
+   the upstream trigger of the iteration-383 transition, if either of the
+   above leaves it unresolved.
 
 ## Note on Decisions.md
 This is an investigation record, not a project decision -- it documents what
@@ -187,3 +246,63 @@ was tested, what was learned, and what remains unresolved. A concise
 conclusion should only be promoted into `Decisions.md` once either the
 checkpoint comparison or an instrumented rerun confirms the underlying
 mechanism.
+
+## Metric Interpretation
+
+This investigation now includes two independent evaluation paradigms,
+measuring different properties of generated OTHER samples:
+
+- **`classification_validation.py`** (train on real, test on generated):
+  measures whether generated samples preserve class identity recognizable
+  by a real-trained classifier. Prior result in this doc (commit 0d42ca9):
+  generated macro F1 declined from checkpoint 370 (0.3339) to checkpoint
+  380 (0.2149).
+- **`step05_baseline_eval.py` TSTR path** (train on generated, test on
+  real): measures whether generated samples are useful as training data.
+  This investigation's result (above): both macro and OTHER TSTR improved
+  slightly from checkpoint 370 to 380.
+
+The TSTR evaluation did not reproduce the deterioration observed by
+`classification_validation.py`. Because the two evaluation pipelines
+measure different properties (generated-to-real transferability vs.
+real-trained recognition of generated samples), these results should not be
+interpreted as confirming or refuting one another. Disagreement between
+them does not mean either metric is wrong -- they quantify different
+aspects of generation quality, which can evolve differently over the course
+of RL fine-tuning.
+
+## Final Conclusion (OTHER-Specific Question)
+
+**Established:**
+- Native OTHER-capable evaluation was implemented (`--ckpt`/`--out-dir`
+  patch to `step05_baseline_eval.py`, commit 7eb2469 and follow-up).
+- Checkpoints 370 and 380 were evaluated successfully under the same
+  3-seed protocol (seeds 42/123/456) used elsewhere in this investigation.
+- Under TSTR specifically: OTHER's F1 improved from checkpoint 370 to 380
+  in all 3 seeds (never declined); macro TSTR also improved in all 3 seeds.
+- The pre-registered statistical-separation criterion (delta ranges must
+  not overlap to claim an OTHER-specific effect) is **not met** -- the
+  OTHER delta range ([0.008194, 0.048550]) and macro delta range
+  ([0.001438, 0.009928]) overlap.
+
+**Interpretation (do not overstate):** No evidence of OTHER-specific
+collapse was observed **under the TSTR evaluation specifically**, on these
+two checkpoints, at these three seeds. This is not a general or unqualified
+claim that "OTHER does not collapse" -- the `classification_validation.py`
+result showing decline on a different metric remains unreconciled, not
+resolved. This finding narrows the question rather than closing it: the
+original concern (an OTHER-specific failure) is unconfirmed under this
+metric, not disproven overall.
+
+**Remaining open question (new, not a continuation of Investigation_02):**
+Why does the real-trained classifier (`classification_validation.py`) show
+degradation from checkpoint 370 to 380 while TSTR remains stable/improves
+over the same interval? This is a distinct research question about how
+different generation-quality properties diverge during RL fine-tuning, and
+should be tracked as a new, separate investigation rather than extending
+this one indefinitely.
+
+**Project status:** Investigation_02 (the OTHER-collapse-mechanism
+investigation) is considered complete as of this entry. The remaining work
+is a new hypothesis-level question, not an unfinished check within this
+investigation.
