@@ -85,13 +85,60 @@ records, or classifier logits/probabilities from the iteration-383 update
 itself were found (`find outputs -iname "*iter38*" -o -iname "*rollout*"`
 returned no rollout-level artifacts).
 
+## Checkpoint Comparison Result (370 vs. 380) — Inconclusive for OTHER
+
+Ran `mentor_eval/classification_validation.py --ckpt <path> --seed 42` against
+both `rl_ckpt_iter0370.pt` and `rl_ckpt_iter0380.pt` (the checkpoints bracketing
+the iteration-383 transition).
+
+**Result:**
+
+| Metric | Checkpoint 370 | Checkpoint 380 |
+|---|---|---|
+| Generated-data accuracy | 0.4300 | 0.3567 |
+| Generated-data macro F1 | 0.3339 | 0.2149 |
+| Normal F1 | 0.4219 | 0.0762 |
+| STEMI F1 | 0.5405 | 0.5102 |
+| NSTEMI F1 | 0.0392 | 0.0583 |
+
+Real-data classifier metrics (Stage 1) are identical between runs, as expected
+(same PTB-XL data, same seed). Generated-data macro F1 declined ~36% relative
+between the two checkpoints, driven mainly by a large drop in Normal-class F1.
+
+**Why this does not resolve the OTHER question:** `classification_validation.py`
+excludes AFIB from all Stage 2 (generated-data) evaluation, regardless of
+checkpoint (script line 15: "AFIB is excluded from stage 2 regardless of
+checkpoint"). AFIB is the mentor-facing proxy class that OTHER maps to
+(`mentor_eval/class_mapping.py`'s `MENTOR_TO_TRAINED_CLASS`, which has exactly
+four keys -- Normal, STEMI, NSTEMI, AFIB -- with AFIB mapped to `None` rather
+than to a trained class; OTHER has no entry at all). No OTHER-specific metric
+is produced by this script under any invocation.
+
+**Conclusion:** This comparison shows real, if unrelated, evidence that overall
+generation quality (Normal/STEMI/NSTEMI) declined between iterations 370 and
+380. It provides **no evidence either way** about whether OTHER's generation
+quality was already degrading before the iteration-383 transition identified
+in the training-log analysis. The original question this comparison was meant
+to answer remains open.
+
+**Gap identified:** The current mentor evaluation pipeline has no mechanism to
+score OTHER-conditioned generated samples at all, since it operates entirely
+in the 4-class mentor-facing taxonomy and structurally excludes AFIB/OTHER.
+A genuinely informative checkpoint comparison for this investigation would
+require either (a) an OTHER-inclusive evaluation path in the mentor pipeline,
+or (b) direct use of the TRTR classifier (6-class native taxonomy, already
+used elsewhere in Stage 4) against generated OTHER samples from both
+checkpoints.
+
 ## Future Work
-1. **Checkpoint comparison** (no retraining required): run the existing
-   mentor evaluation / classification pipeline against generated OTHER
-   samples from both `rl_ckpt_iter0370.pt` and `rl_ckpt_iter0380.pt`, to check
-   whether degradation was already underway before iteration 383 (weakening
-   the "sudden transition" framing) or whether both checkpoints look healthy
-   (supporting iteration 383 as the true onset).
+1. **Checkpoint comparison via TRTR classifier**: the mentor-pipeline
+   comparison above was attempted but is structurally unable to evaluate
+   OTHER (see above). Re-run the comparison using the TRTR classifier
+   (6-class native taxonomy) against OTHER samples generated from
+   `rl_ckpt_iter0370.pt` and `rl_ckpt_iter0380.pt`, to check whether
+   degradation was already underway before iteration 383 (weakening the
+   "sudden transition" framing) or whether both checkpoints look healthy on
+   OTHER specifically (supporting iteration 383 as the true onset).
 2. **Instrumented rerun**: add per-rollout logging (sample IDs, classifier
    logits/probabilities, reward components before aggregation) to identify
    the upstream trigger of the transition, if the checkpoint comparison above
