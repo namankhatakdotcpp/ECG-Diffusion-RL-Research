@@ -351,6 +351,12 @@ class DiagnosticUtilityReward:
     trtr_classifier_eval.json isn't present, since the weight-vs-uniform
     question is unvalidated until real per-class F1 numbers exist.
 
+    `reliability_alpha` interpolates between full F1 scaling (1.0, the prior
+    default) and no scaling (0.0):
+        reliability = alpha * per_class_f1 + (1 - alpha) * 1.0
+    See Roadmap/Stage_4_Optimization/Reward_Design_v2.md Section 4a for the
+    reliability-weight validation study this supports.
+
     WARNING: This component alone causes reward hacking if used without the others.
     The diffusion model quickly learns to produce ECGs that fool the CNN while
     ignoring physiological constraints (demonstrated in the ablation study, step09).
@@ -362,20 +368,25 @@ class DiagnosticUtilityReward:
 
     def __init__(
         self,
-        classifier_path: str,
-        n_classes:       int,
-        device:          str = "cpu",
-        eval_path:       Optional[str] = None,
-        use_reliability: bool = True,
+        classifier_path:   str,
+        n_classes:         int,
+        device:            str = "cpu",
+        eval_path:         Optional[str] = None,
+        reliability_alpha: float = 1.0,
     ):
         from step05_baseline_eval import Simple1DCNN
+
+        if not 0.0 <= reliability_alpha <= 1.0:
+            raise ValueError(
+                f"reliability_alpha must be in [0.0, 1.0], got {reliability_alpha!r}"
+            )
 
         self.device      = device
         self.n_classes   = n_classes
         self.available   = False
         self._log        = logging.getLogger(__name__)
         self.model: Optional[nn.Module] = None
-        self.use_reliability = use_reliability
+        self.reliability_alpha = reliability_alpha
         self.reliability  = np.ones(n_classes, dtype=float)
 
         path = Path(classifier_path)
@@ -400,19 +411,13 @@ class DiagnosticUtilityReward:
                 "Run step05 first. Returning 0.5 (neutral)."
             )
 
-        if not use_reliability:
-            self._log.info(
-                "DiagnosticUtilityReward: use_reliability_scaling=False — "
-                "reliability fixed at 1.0 (ablation mode)."
-            )
-            return
-
         eval_p = Path(eval_path) if eval_path else path.parent / "trtr_classifier_eval.json"
+        per_class_f1 = np.ones(n_classes, dtype=float)
         if eval_p.exists():
             try:
-                per_class_f1 = json.load(open(eval_p)).get("per_class_f1")
-                if per_class_f1 and len(per_class_f1) == n_classes:
-                    self.reliability = np.asarray(per_class_f1, dtype=float)
+                f1_values = json.load(open(eval_p)).get("per_class_f1")
+                if f1_values and len(f1_values) == n_classes:
+                    per_class_f1 = np.asarray(f1_values, dtype=float)
                     self._log.info(
                         f"DiagnosticUtilityReward: loaded per-class reliability from {eval_p}"
                     )
@@ -431,6 +436,15 @@ class DiagnosticUtilityReward:
                 f"DiagnosticUtilityReward: {eval_p} not found. "
                 "Using uniform reliability=1.0 until a real TRTR eval is produced."
             )
+
+        self.reliability = (
+            reliability_alpha * per_class_f1
+            + (1 - reliability_alpha) * np.ones(n_classes, dtype=float)
+        )
+        self._log.info(
+            f"DiagnosticUtilityReward: reliability_alpha={reliability_alpha} -> "
+            f"reliability={self.reliability.tolist()}"
+        )
 
     def compute(self, ecg: np.ndarray, target_class_idx: int) -> float:
         """
@@ -824,10 +838,10 @@ def get_reward(
     # diffusion model, which is a reward-hacking risk when used to fine-tune
     # that same model. See Roadmap/Stage_4_Optimization/Decisions.md.
     classifier_path = str(Path(cfg.paths.outputs.models) / "trtr_classifier.pt")
-    use_reliability = bool(rc.get("use_reliability_scaling", True))
+    reliability_alpha = float(rc.get("reliability_alpha", 1.0))
     diag = DiagnosticUtilityReward(
         classifier_path, n_classes=len(class_names), device=device,
-        use_reliability=use_reliability,
+        reliability_alpha=reliability_alpha,
     )
 
     # ── Weights ──────────────────────────────────────────────────────────────

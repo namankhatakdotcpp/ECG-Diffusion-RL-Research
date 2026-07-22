@@ -173,9 +173,10 @@ reward:
     hrv:   0.13                # HRVReward               — HRV plausibility
   pca_components: 50          # PCA components for RealismReward
   pca_n_train_samples: 2000   # training records used to fit PCA
-  use_reliability_scaling: true  # DiagnosticUtilityReward *= per-class TRTR F1
-                                  # (trtr_classifier_eval.json); ablatable — set
-                                  # false to compare with/without for the paper
+  reliability_alpha: 1.0      # DiagnosticUtilityReward reliability interpolation:
+                               # reliability = alpha * per_class_f1 + (1 - alpha) * 1.0
+                               # 1.0 = full F1 scaling (prior default), 0.0 = no scaling.
+                               # See Roadmap/Stage_4_Optimization/Reward_Design_v2.md Section 4a.
 
 # ---------------------------------------------------------------------------
 # RL Fine-Tuning Hyperparameters (PPO / GRPO)
