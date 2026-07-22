@@ -2305,6 +2305,14 @@ same method as the Gate 3 iter=13 vs. iter=166-215 distinction above).
 - **Threshold (signed off):** Gate 3 healthy ranges apply verbatim at
   250-iteration sweep scale — mean KL **≤0.05**; max `grad_norm` within
   **1.5×** of the `alpha=1.00` baseline arm's grad_norm variance.
+- **Note — tightening, not a contradiction.** Stage 4's pre-registration
+  (line 1171 above, `stage4_finetune_v1` entry) used looser language:
+  "KL stays within the same order of magnitude observed in Gate 3
+  (roughly 0.003-0.06 range)." The new **mean KL ≤0.05** bound is a
+  specific pass/fail number chosen *inside* that already-approved
+  0.003-0.06 range, not a new or conflicting bound — a reader comparing
+  the two should read this as Stage 4's qualitative range now given a
+  precise boundary for this sweep, not a second, different criterion.
 
 ### Reward-hacking disqualifying conditions (Dr. Balaji, 2026-07-22)
 
@@ -2373,10 +2381,33 @@ above:
   document, seed 42, 250 iterations each. Identifies `alpha*`.
 - **Stage 2 — Verification (paper baseline)**: `alpha*` and the
   `alpha=1.00` baseline, each re-run across 4 additional seeds (5 total
-  per setting). Note: `config.yaml`'s `seeds: [42, 123, 456]` currently
-  lists only 2 seeds beyond 42 — picking the remaining 2 seed values is
-  an open implementation detail for whoever executes Stage 2, not a
-  protocol question resolved here.
+  per setting).
+
+  **OPEN QUESTION — unresolved, blocks Stage 2 only (not Stage 1):**
+  Dr. Balaji's phrasing ("Seed 0" for Stage 1, "Seeds 1-4" for Stage 2)
+  does not map cleanly onto this project's actual seed convention.
+  `config.yaml` has `seeds: [42, 123, 456]` — a 3-entry list — and this
+  sweep's own pre-registration (Section above, "Run parameters") already
+  locks Stage 1 to `cfg.seeds[0]` = **42**, not literal seed value 0.
+  Two readings of "Seed 0"/"Seeds 1-4" are possible and have not been
+  distinguished:
+  1. "Seed 0" means literal seed value `0` (not `42`, not in
+     `config.yaml` at all) — in which case Stage 1 as already run would
+     need to be re-run under seed `0` for internal consistency with
+     Stage 2's "Seeds 1-4" also being literal values 1/2/3/4.
+  2. "Seed 0" means *index* 0 of some seed list — consistent with this
+     sweep's actual Stage 1 (`cfg.seeds[0]`=42) — in which case "Seeds
+     1-4" means indices 1-4 of a 5-entry seed list that doesn't exist
+     yet (`config.yaml` only has 3 entries/indices 0-2).
+  Either reading requires a decision this document does not make:
+  extend `config.yaml`'s `seeds` list to (at least) 5 entries with
+  specific values, or treat Stage 2's seeds as arbitrary values Naman
+  supplies independent of `config.yaml`. **Stage 1 (this document's
+  5-arm sweep) is unaffected either way** — it already reuses
+  `cfg.seeds[0]`=42 exactly as pre-registered, consistent with reading
+  2. This is flagged for Naman to resolve (a quick follow-up with Dr.
+  Balaji, or Naman's own call under reading 2) before Stage 2 is
+  planned or executed — not something to guess at here.
 - **Sufficiency for the paper**: mean ± std across 5 total seeds
   (baseline and `alpha*`) is sufficient for statistical-significance
   reporting and camera-ready results — no additional experiment beyond
