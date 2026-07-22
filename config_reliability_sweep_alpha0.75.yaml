@@ -1,0 +1,271 @@
+# =============================================================================
+# config.yaml — Single source of truth for ECG Diffusion + RL Research
+# HCLTech Internship | Naman Khatak | June 2026
+# =============================================================================
+
+project:
+  name: ecg_research
+  description: "ECG Diffusion + PPO/GRPO RL fine-tuning for disease-to-healthy translation"
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+paths:
+  data:
+    ptbxl: data/ptbxl/
+    mitbih: data/mitbih/
+  outputs:
+    processed: outputs/processed/
+    models: outputs/models/
+    generated: outputs/generated/
+    results: outputs/results/
+  logs: logs/
+
+# ---------------------------------------------------------------------------
+# PTB-XL Dataset Settings
+# ---------------------------------------------------------------------------
+ptbxl:
+  sampling_rate: 100          # Hz (100 or 500 available; 100 is standard)
+  lead_names:
+    - I
+    - II
+    - III
+    - aVR
+    - aVL
+    - aVF
+    - V1
+    - V2
+    - V3
+    - V4
+    - V5
+    - V6
+  # Matches the real class_names.json step03 produces (AFIB has only 103
+  # records project-wide, below min_class_samples -- folded into OTHER,
+  # not a dedicated class). Only consulted as a fallback in step04/step02/
+  # step06 when class_names.json/class_mapping.json are missing -- see
+  # Roadmap/Stage_0_Pipeline_Audit/Reports/Pipeline_Code_Audit.md Finding 6.
+  # Previously listed 7 classes including AFIB and a stale n_classes: 7,
+  # silently disagreeing with the real 6-class taxonomy on disk.
+  classes:
+    - NORM
+    - MI
+    - STTC
+    - CD
+    - HYP
+    - OTHER
+  n_classes: 6
+  signal_length: 1000         # samples at 100 Hz → 10 seconds
+  train_fold: [1, 2, 3, 4, 5, 6, 7, 8]
+  val_fold: [9]
+  test_fold: [10]
+  min_class_samples: 200     # drop classes with fewer training records than this
+
+# ---------------------------------------------------------------------------
+# Preprocessing Settings
+# ---------------------------------------------------------------------------
+preprocessing:
+  bandpass_low: 0.5           # Hz — removes baseline wander
+  bandpass_high: 40.0         # Hz — removes EMG / high-freq noise
+  filter_order: 4             # Butterworth filter order
+  baseline_window_sec: 0.5    # seconds for median-filter baseline correction
+  clip_range: [-4.0, 4.0]    # post-normalisation clip (removes spike artifacts)
+  batch_size: 500             # records loaded per processing batch
+  multilabel_confidence: 50.0 # minimum SCP confidence to assign a label
+
+# ---------------------------------------------------------------------------
+# Disease-to-Healthy Translation Target
+# ---------------------------------------------------------------------------
+translation:
+  source_class: MI            # Myocardial Infarction → translate to healthy sinus
+  target_class: NORM
+
+# ---------------------------------------------------------------------------
+# Diffusion Model Hyperparameters — Transformer-backbone (primary model)
+# Architecture: patchified ECG → BERT-style Transformer → noise prediction
+# ---------------------------------------------------------------------------
+diffusion:
+  # Noise schedule
+  T: 1000                     # diffusion timesteps
+  beta_schedule: cosine
+  # Architecture (ECGTransformerDiffusion)
+  model_dim: 256              # embedding / attention dimension
+  patch_size: 20              # temporal patch size: 1000 / 20 = 50 patches per lead
+  n_heads: 8                  # multi-head attention heads
+  n_transformer_layers: 6     # Transformer depth
+  n_layers: 6                 # kept for UNet backward-compat (unused by current Transformer backbone)
+  d_ff: 1024                  # FFN hidden dimension (4× model_dim)
+  dropout: 0.1
+  # Training
+  n_epochs: 200
+  batch_size: 32
+  lr: 2.0e-4
+  weight_decay: 1.0e-4
+  ema_decay: 0.9999
+  grad_clip: 1.0
+  save_every: 25              # checkpoint + validation every N epochs
+  # CFG (classifier-free guidance)
+  p_uncond: 0.10              # per-sample null-class dropout probability during training
+  guidance_scale: 3.0         # CFG scale at sampling time (used by cfg_sweep.py; not applied by default)
+  # Inference
+  ddim_steps: 50              # DDIM sampling steps (η=0, deterministic)
+  sample_timesteps: 50        # alias kept for backward-compat
+
+# ---------------------------------------------------------------------------
+# Classifier Hyperparameters (Track B — shared for TSTR evaluation)
+# ---------------------------------------------------------------------------
+classifier:
+  n_epochs: 50
+  lr: 1.0e-4
+  batch_size: 32
+  loss: bce                   # binary cross-entropy (sigmoid / one-vs-rest)
+  weight_decay: 1.0e-4
+  patience: 10                # early stopping patience
+  d_model: 256
+  n_heads: 8
+  n_layers: 4
+  dropout: 0.1
+
+# ---------------------------------------------------------------------------
+# Clinical Reward Function (step06_reward_function.py)
+# ---------------------------------------------------------------------------
+reward:
+  # composite reward weights (must sum to 1.0). NOW ACTUALLY WIRED: a prior
+  # bug had get_reward() silently ignore this block even for the "full"
+  # config and use a hardcoded 0.3/0.3/0.2/0.2 (morph/hrv/real/diag, no a3)
+  # instead — found and fixed while wiring reward_a3 in. Every weight number
+  # discussed for this file before that fix was dead config. See Decisions.md.
+  #
+  # TEMPORARY NORMALIZED DEFAULTS -- NOT EXPERIMENTALLY VALIDATED.
+  # Renormalized from an earlier unvalidated 6-term split already recorded
+  # in Roadmap/Stage_4_Optimization/Decisions.md (diag .35 / a3 .20 /
+  # morph .15 / real .15 / hrv .10 / regularization .05): the
+  # not-yet-implemented regularization term was dropped and the remaining
+  # 0.95 rescaled to sum to 1.0. This is arithmetic on a prior guess, not
+  # evidence -- do not call this "derived from Stage 3 data" or treat it as
+  # settled. Still explicitly UNVALIDATED -- Dr. Balaji's call, not decided
+  # here.
+  #
+  # a3 RE-ENABLED at a moderate 0.15 (was gated to 0.0, then 0.21 before
+  # that -- see Decisions.md for the full history). The local
+  # validate_a3_reward.py bootstrap (n=360/group, 3 seeds, CPU) returned
+  # INCONCLUSIVE for generated-vs-real, but a higher-powered GPU cross-check
+  # (mentor_eval/subband_similarity_metrics.py --self-check, n=500/half,
+  # 3x the local sample size, independent real-vs-real noise floor) found a
+  # clear signal: generated-vs-real A3 Mahalanobis is ~3x the real-vs-real
+  # noise floor for Normal (4.5694 vs 1.5039) and STEMI (5.7110 vs 1.8612),
+  # ~1.33x for NSTEMI (5.7590 vs 4.3286) -- smaller margin, but still above
+  # the noise floor for every class checked. The local INCONCLUSIVE is
+  # SUPERSEDED, not contradicted: it lacked the statistical power to detect
+  # an effect this size at n=360, not evidence there was no effect.
+  #
+  # 0.15 (not the original 0.21) reflects NSTEMI's smaller margin -- a
+  # judgment call, proposed but NOT independently re-derived from data, and
+  # explicitly flagged as needing sign-off (from the user or Dr. Balaji)
+  # before being treated as settled, same as every other weight number in
+  # this file. TEMPORARY NORMALIZED DEFAULT, NOT EXPERIMENTALLY VALIDATED
+  # BY A TRAINING OUTCOME -- this only validates that reward_a3 measures a
+  # real signal, not that 0.15 specifically is the right weight for it.
+  weights:
+    diag:  0.40                # DiagnosticUtilityReward — classifier confidence
+    a3:    0.15                # A3Reward                — A3-subband slow-wave match
+    morph: 0.16                # MorphologyReward        — PQRST interval matching
+    real:  0.16                # RealismReward           — PCA manifold proximity
+    hrv:   0.13                # HRVReward               — HRV plausibility
+  pca_components: 50          # PCA components for RealismReward
+  pca_n_train_samples: 2000   # training records used to fit PCA
+  reliability_alpha: 0.75      # DiagnosticUtilityReward reliability interpolation:
+                               # reliability = alpha * per_class_f1 + (1 - alpha) * 1.0
+                               # 1.0 = full F1 scaling (prior default), 0.0 = no scaling.
+                               # See Roadmap/Stage_4_Optimization/Reward_Design_v2.md Section 4a.
+
+# ---------------------------------------------------------------------------
+# RL Fine-Tuning Hyperparameters (PPO / GRPO)
+# ---------------------------------------------------------------------------
+rl:
+  algorithm: ppo              # "ppo" or "grpo"
+  # PPO hyperparameters
+  ppo_clip: 0.2               # ε for clipped surrogate objective
+  n_rollouts: 4               # trajectories collected per PPO iteration
+  n_ppo_epochs: 4             # PPO update passes per rollout batch
+  # GRPO hyperparameters
+  grpo_groups: 8              # group size G for GRPO
+  # Shared
+  kl_beta: 0.1                # β — KL penalty weight vs. frozen reference model
+  rl_lr: 3.0e-6               # learning rate for RL fine-tuning
+  grad_clip: 0.5              # gradient clip (tighter than diffusion training)
+  rl_iterations: 50           # total RL training iterations
+  ddim_rollout_steps: 20      # DDIM steps per rollout (< eval for speed)
+  rl_eta: 1.0                 # stochasticity: 1.0 = full DDPM, 0.0 = det. DDIM
+  baseline_decay: 0.99        # EMA decay for PPO advantage baseline
+  save_every_iters: 10        # checkpoint every N iterations
+  plot_every_iters: 5         # progress plot every N iterations
+  smoke_test_iterations: 10   # iterations for `python step07_rl_finetuning.py --smoke-test`
+  # Evaluation checkpoint schedule. Lightweight eval (frozen TRTR classifier
+  # confidence + KL-to-base) runs at every entry in eval_checkpoints so a
+  # stalled/regressing run is caught cheaply. The full Stage-3-equivalent
+  # suite (Mentor Classifier retrain — several GPU-minutes — plus
+  # disease-wise metrics) only runs at full_eval_checkpoints, a coarser
+  # subset, to avoid paying that retrain cost repeatedly.
+  eval_checkpoints:      [250, 500, 1000, 2000, 5000]
+  full_eval_checkpoints: [1000, 5000]
+  # Early stopping and checkpoint selection are BOTH gated on full_eval_checkpoints
+  # only (Mentor Classifier / heavy-eval metrics) -- never on the lightweight
+  # TRTR-based checkpoints. TRTR is the same classifier used as the training
+  # reward signal (DiagnosticUtilityReward); stopping or selecting on it would
+  # just be re-confirming the training reward converged, not that the model
+  # generalises -- the same circularity already resolved for the reward
+  # function itself (see Decisions.md). The Mentor Classifier is retrained
+  # from scratch and evaluated independently of anything used in training.
+  early_stopping:
+    enabled: false             # opt-in; full-eval checkpoints are expensive
+    metric: mentor_macro_f1    # from classifier_generated_eval.json (Mentor Classifier
+                                # scored on this checkpoint's generated ECGs) -- NOT trtr
+    mode: max
+    patience: 2                # consecutive full-eval checkpoints with no improvement
+    min_delta: 0.01
+  checkpoint_selection:
+    metric: mentor_macro_f1    # NOT trtr_macro_f1 -- see note above
+    mode: max
+  mentor_stability_check_repeats: 3  # re-run Mentor Classifier eval this many
+                                      # times (different seeds) at the FIRST
+                                      # full-eval checkpoint only, to measure
+                                      # mentor_macro_f1's own run-to-run spread
+                                      # before trusting it for early-stop/selection
+                                      # decisions. Subsequent full-eval checkpoints
+                                      # use a single run (repeating every time would
+                                      # re-stack the same retrain cost already
+                                      # flagged for the Mentor Classifier).
+
+# ---------------------------------------------------------------------------
+# Evaluation (step05_baseline_eval.py)
+# ---------------------------------------------------------------------------
+eval:
+  n_synthetic_per_class: 500  # ECGs generated per class for evaluation
+  n_morphology_eval: 100      # subset analysed by neurokit2 (speed)
+  dtw_subsample: 50           # per-class subsample for DTW nearest-neighbour search
+  fed_encoder_epochs: 20      # epochs to train the FED CNN encoder
+  fed_encoder_lr: 1.0e-3
+  fed_encoder_batch_size: 64
+  tstr_epochs: 30             # epochs for TSTR / TRTR classifier
+  tstr_lr: 1.0e-3
+  tstr_batch_size: 64
+  seeds: [42, 123, 456]       # seeds used in the evaluation loop
+
+# ---------------------------------------------------------------------------
+# Reproducibility
+# ---------------------------------------------------------------------------
+seeds: [42, 123, 456]         # 3-seed runs for confidence intervals
+
+# ---------------------------------------------------------------------------
+# Device
+# ---------------------------------------------------------------------------
+device: auto                  # "auto" → cuda if available, else cpu
+
+# ---------------------------------------------------------------------------
+# Logging / Experiment Tracking
+# ---------------------------------------------------------------------------
+logging:
+  use_wandb: false            # set true to enable W&B tracking
+  wandb_project: ecg-diffusion-rl
+  wandb_entity: null          # your W&B username / team
+  log_interval: 50            # log every N steps
