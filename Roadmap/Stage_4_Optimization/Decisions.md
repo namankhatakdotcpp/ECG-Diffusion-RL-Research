@@ -2383,7 +2383,20 @@ above:
   `alpha=1.00` baseline, each re-run across 4 additional seeds (5 total
   per setting).
 
-  **OPEN QUESTION — unresolved, blocks Stage 2 only (not Stage 1):**
+  **UNVERIFIED — PROPOSED 2026-07-23, NOT CONFIRMED WITH DR. BALAJI —
+  see "Proposed Protocol Amendments" section below (Amendment 3).** A
+  draft resolution exists: Stage 1 = seed 42 only (already run, matches
+  reading 2 below — no rerun needed). Stage 2 = baseline + `alpha*` on
+  seeds **43 and 44** specifically (literal values, not `config.yaml`
+  list indices) — 3 total seeds per setting, not 5. This is a proposal
+  only and has not been independently confirmed with Dr. Balaji through
+  any channel outside an AI chat session; do not treat it as resolved
+  until confirmed. It would supersede the "4 additional seeds / 5
+  total" framing originally drafted in this bullet and the "Sufficiency
+  for the paper" bullet below, if and when confirmed. Original
+  open-question text preserved unmodified below for the audit trail:
+
+  ~~**OPEN QUESTION — unresolved, blocks Stage 2 only (not Stage 1):**
   Dr. Balaji's phrasing ("Seed 0" for Stage 1, "Seeds 1-4" for Stage 2)
   does not map cleanly onto this project's actual seed convention.
   `config.yaml` has `seeds: [42, 123, 456]` — a 3-entry list — and this
@@ -2407,24 +2420,127 @@ above:
   `cfg.seeds[0]`=42 exactly as pre-registered, consistent with reading
   2. This is flagged for Naman to resolve (a quick follow-up with Dr.
   Balaji, or Naman's own call under reading 2) before Stage 2 is
-  planned or executed — not something to guess at here.
-- **Sufficiency for the paper**: mean ± std across 5 total seeds
-  (baseline and `alpha*`) is sufficient for statistical-significance
-  reporting and camera-ready results — no additional experiment beyond
-  this two-stage structure is required.
+  planned or executed — not something to guess at here.~~
+- **Sufficiency for the paper — see Amendment 3 (unverified proposal)**:
+  original text called for "5 total seeds"; a proposed, unconfirmed
+  2026-07-23 revision suggests 3 total seeds (42, 43, 44) with a
+  two-tailed t-test, mean ± SD. Do not act on this until independently
+  confirmed with Dr. Balaji.
 
 ### Explicitly not done here
 
-- No real 250-iteration sweep arm has been run. (Disposable 1-iteration
-  dry runs under throwaway tags were used to verify `--config` plumbing
-  and the launcher script's mechanics — each cleaned up immediately
-  after, none under a `reliability_alpha{XXX}` tag.)
-- No threshold numbers invented — every value above is Dr. Balaji's
-  2026-07-22 sign-off, not inferred or guessed.
-- No Stage 2 seed values selected yet (2 additional seeds beyond
-  `config.yaml`'s existing 123/456 need picking) — deferred to whoever
-  executes Stage 2, not decided in this document.
+- **UPDATE 2026-07-23.** All 4 sweep arms (`reliability_alpha075/050/025/000`)
+  ran to completion, 250/250 iterations each, seed 42, verified (final
+  checkpoint present, `rl_training_log.csv` at exactly 251 lines,
+  archived) — see the Proposed Protocol Amendments section below for
+  Condition 1/2/3 verdicts computed under a draft, unconfirmed rule
+  set. Original text preserved for the audit trail: ~~No real
+  250-iteration sweep arm has been run. (Disposable 1-iteration dry
+  runs under throwaway tags were used to verify `--config` plumbing and
+  the launcher script's mechanics — each cleaned up immediately after,
+  none under a `reliability_alpha{XXX}` tag.)~~
+- No threshold numbers invented for the original pre-registration —
+  every value above is Dr. Balaji's 2026-07-22 sign-off, not inferred
+  or guessed. (The 2026-07-23 amendment thresholds below are a
+  separate, as-yet-unconfirmed matter — see the Proposed Protocol
+  Amendments section.)
+- Stage 2 seed values: **a proposed resolution exists, see Amendment 3
+  — not yet confirmed** (seeds 43 and 44, literal values). Original
+  text preserved: ~~No Stage 2 seed values selected yet (2 additional
+  seeds beyond `config.yaml`'s existing 123/456 need picking) —
+  deferred to whoever executes Stage 2, not decided in this
+  document.~~
 - `step07_rl_finetuning.py` did change (commit `123ca25`, `--config` CLI
   flag) — a prerequisite infrastructure change, not a reward-logic or
   hyperparameter change. `step06_reward_function.py`'s reward logic
   itself is unchanged since commit `9311d67`.
+
+## Proposed Protocol Amendments — PENDING VERIFICATION (drafted 2026-07-23, NOT yet confirmed with Dr. Balaji)
+
+**Status: UNVERIFIED.** The four protocol points below were drafted as
+*proposed* resolutions on 2026-07-23 to close ambiguities identified during
+the 2026-07-23 verification session — Condition 1's aggregation-statistic
+gap, Condition 3's HYP-vs-macro scope mismatch, the Stage 2 seed-convention
+ambiguity, and the undefined "stays flat" epsilon. **These have NOT been
+confirmed with Dr. Balaji through any channel independent of an AI chat
+session.** An earlier version of this document stated these as resolved,
+PI-signed-off fact; that framing was incorrect and has been corrected here.
+Do not treat any ruling below as real, and do not act on the downstream
+"zero arms qualify" / recomputation conclusions elsewhere in this document,
+until Dr. Balaji has confirmed each point directly (email, in-person, a
+written note taken live during a conversation with him — not another AI
+session). Original wording is preserved unmodified above this section;
+these amendments would supersede it going forward *if and when confirmed*
+— they are recorded as a draft proposal, not retrofitted into the original
+pre-registration text as settled fact.
+
+### Amendment 1 (proposed) — A3 Mahalanobis aggregation statistic (would resolve Condition 1 ambiguity)
+
+**Proposed ruling (unverified):** Mean Mahalanobis distance across all evaluation batches.
+
+**Rule:** The existing +8% threshold (metric category 3, above) applies to
+the mean Mahalanobis distance, computed as the mean over per-batch distance
+values (i.e., mean of `-8.0 * ln(r_a3)` across all logged rows in
+`rl_training_log.csv`), relative to the `gate3_250_fixed` baseline.
+
+**Implementation note (not part of the ruling, flagged for the record):**
+"per evaluation batch" is interpreted as one row of `rl_training_log.csv`
+(one PPO rollout batch). This matches the "mean-of-inverted-distances"
+statistic already computed in the 2026-07-23 verification session, not the
+alternative "distance-of-the-mean-reward" statistic also computed there. If
+this interpretation is wrong, Condition 1's verdicts need re-deriving under
+the other reading.
+
+### Amendment 2 (proposed) — Condition 3 metric scope (would resolve HYP-vs-macro scope mismatch)
+
+**Proposed ruling (unverified):** HYP-F1 adopted as the primary target
+metric; global Macro-F1 retained as a secondary non-inferiority
+constraint.
+
+**This is a substantive change to Condition 3 as originally pre-registered
+above, not a clarification of ambiguous wording — recorded as an amendment
+for the audit trail.**
+
+- **Original Condition 3 (superseded):** disqualify if `r_diag` increases
+  by more than 5% while TRTR macro-F1 (all 6 classes) simultaneously drops
+  or stays flat.
+- **Amended Condition 3:**
+  - **Primary target:** `F1_HYP` must improve by ≥ +3.0 percentage points
+    (absolute) over the `gate3_250_fixed` baseline HYP-F1 to qualify as a
+    successful arm on this axis.
+  - **Secondary safety bound:** global Macro-F1 (6-class) must not drop by
+    more than 1.5 percentage points (absolute) relative to baseline. A drop
+    exceeding this bound disqualifies the arm regardless of HYP-F1
+    performance.
+
+### Amendment 3 (proposed) — Seed protocol (would resolve Stage 2 seed-convention ambiguity)
+
+**Proposed ruling (unverified):** Two-stage approach.
+
+- **Stage 1 (discovery, already complete):** all 5 arms (baseline +
+  α∈{0.75,0.50,0.25,0.00}) evaluated at seed=42, 250 iterations each. This
+  is the sweep already executed and verified 2026-07-22/23 — no rerun
+  needed.
+- **Stage 2 (paper verification, not yet run):** once α* is selected from
+  Stage 1 under Amendments 1–2, rerun baseline (α=1.00) and α* only on
+  seeds 43 and 44. Report mean ± SD and two-tailed t-test p-values.
+
+### Amendment 4 (proposed) — "Stays flat" tolerance band (would resolve undefined epsilon)
+
+**Proposed ruling (unverified):** ±0.5 percentage points absolute Macro-F1.
+
+**Rule:** any Macro-F1 change within [-0.5, +0.5] percentage points
+(absolute, not relative %) relative to baseline is logged as
+"statistically flat / no change." This band applies to the secondary
+safety-bound check in Amendment 2, not as a standalone Condition 3 test.
+
+---
+
+**NOT effective.** None of the four proposed amendments above are
+confirmed. Condition 1 and Condition 3 verdicts computed under the
+original pre-amendment rules (2026-07-22 sign-off) remain the only
+verified basis for any decision. Any recomputation of Condition 1/3 under
+the proposed amendments above, and any resulting α* selection (or
+non-selection, including a "zero arms qualify" conclusion), is
+provisional and must not be acted on — reported to Naman for review and
+independent verification with Dr. Balaji, not treated as a real result.
