@@ -2455,47 +2455,44 @@ above:
   hyperparameter change. `step06_reward_function.py`'s reward logic
   itself is unchanged since commit `9311d67`.
 
-## Proposed Protocol Amendments — PENDING VERIFICATION (drafted 2026-07-23, NOT yet confirmed with Dr. Balaji)
+## Protocol Amendments — PI Sign-Off, 2026-07-24 (confirmed via email, see `correspondence/2026-07-24_balaji_protocol_ruling.md`)
 
-**Status: UNVERIFIED.** The four protocol points below were drafted as
-*proposed* resolutions on 2026-07-23 to close ambiguities identified during
-the 2026-07-23 verification session — Condition 1's aggregation-statistic
-gap, Condition 3's HYP-vs-macro scope mismatch, the Stage 2 seed-convention
-ambiguity, and the undefined "stays flat" epsilon. **These have NOT been
-confirmed with Dr. Balaji through any channel independent of an AI chat
-session.** An earlier version of this document stated these as resolved,
-PI-signed-off fact; that framing was incorrect and has been corrected here.
-Do not treat any ruling below as real, and do not act on the downstream
-"zero arms qualify" / recomputation conclusions elsewhere in this document,
-until Dr. Balaji has confirmed each point directly (email, in-person, a
-written note taken live during a conversation with him — not another AI
-session). Original wording is preserved unmodified above this section;
-these amendments would supersede it going forward *if and when confirmed*
-— they are recorded as a draft proposal, not retrofitted into the original
-pre-registration text as settled fact.
+**Status: CONFIRMED.** The four protocol points below were resolved by Dr.
+Balaji via email on 2026-07-24, replying directly to Naman's Track A
+questions — full text preserved verbatim at
+`Roadmap/Stage_4_Optimization/correspondence/2026-07-24_balaji_protocol_ruling.md`.
+This supersedes the earlier `f5a85a5` draft, which correctly labeled these
+same four points as proposed-but-unverified pending independent
+confirmation. An even earlier version of this document (commit `dacf6e5`,
+since amended) had stated these as resolved PI fact based on content that
+turned out to be AI-fabricated, not a real ruling — that was caught and
+corrected before it propagated. This time the ruling is grounded in an
+actual received email, cited above as a standing artifact rather than
+resting on any AI chat's account of what was said. Original 2026-07-22
+wording is preserved unmodified above this section for the audit trail;
+these amendments supersede it going forward.
 
-### Amendment 1 (proposed) — A3 Mahalanobis aggregation statistic (would resolve Condition 1 ambiguity)
+### Amendment 1 — A3 Mahalanobis aggregation statistic (resolves Condition 1 ambiguity)
 
-**Proposed ruling (unverified):** Mean Mahalanobis distance across all evaluation batches.
+**Ruling:** Distance computed from the mean reward — option (b), NOT mean
+of per-sample inverted distances (option (a), which Dr. Balaji's email
+explicitly rejects as "mathematically unstable," citing non-zero epsilon
+cliffs turning a +3.5% shift into +35.8% as "an artifact of the metric's
+form, not actual feature-space distortion").
 
-**Rule:** The existing +8% threshold (metric category 3, above) applies to
-the mean Mahalanobis distance, computed as the mean over per-batch distance
-values (i.e., mean of `-8.0 * ln(r_a3)` across all logged rows in
-`rl_training_log.csv`), relative to the `gate3_250_fixed` baseline.
+**Rule:** The existing ≤8% threshold (metric category 3, above) applies to
+the distance-of-the-mean-reward statistic: compute `mean(r_a3)` across all
+logged rows in `rl_training_log.csv` for the arm, THEN apply
+`-8.0 * ln(mean(r_a3))`, relative to the same computation on the
+`gate3_250_fixed` baseline. This is the OPPOSITE order of operations from
+option (a) (which logs/inverts per-row first, then averages) — do not
+confuse the two; they produce materially different numbers (see the
+recomputed Condition 1 table below).
 
-**Implementation note (not part of the ruling, flagged for the record):**
-"per evaluation batch" is interpreted as one row of `rl_training_log.csv`
-(one PPO rollout batch). This matches the "mean-of-inverted-distances"
-statistic already computed in the 2026-07-23 verification session, not the
-alternative "distance-of-the-mean-reward" statistic also computed there. If
-this interpretation is wrong, Condition 1's verdicts need re-deriving under
-the other reading.
+### Amendment 2 — Condition 3 metric scope (resolves HYP-vs-macro scope mismatch)
 
-### Amendment 2 (proposed) — Condition 3 metric scope (would resolve HYP-vs-macro scope mismatch)
-
-**Proposed ruling (unverified):** HYP-F1 adopted as the primary target
-metric; global Macro-F1 retained as a secondary non-inferiority
-constraint.
+**Ruling:** HYP-F1 adopted as the primary target metric; global Macro-F1
+retained as a secondary non-inferiority constraint.
 
 **This is a substantive change to Condition 3 as originally pre-registered
 above, not a clarification of ambiguous wording — recorded as an amendment
@@ -2513,21 +2510,25 @@ for the audit trail.**
     exceeding this bound disqualifies the arm regardless of HYP-F1
     performance.
 
-### Amendment 3 (proposed) — Seed protocol (would resolve Stage 2 seed-convention ambiguity)
+### Amendment 3 — Seed protocol (resolves Stage 2 seed-convention ambiguity)
 
-**Proposed ruling (unverified):** Two-stage approach.
+**Ruling:** Two-stage approach, literal seed values (not `config.yaml`
+list indices) — per the email: "Do not rely on relative list indices in
+`config.yaml`—hardcode the actual seed integers so the run logs are fully
+reproducible for reviewer verification."
 
 - **Stage 1 (discovery, already complete):** all 5 arms (baseline +
   α∈{0.75,0.50,0.25,0.00}) evaluated at seed=42, 250 iterations each. This
   is the sweep already executed and verified 2026-07-22/23 — no rerun
   needed.
-- **Stage 2 (paper verification, not yet run):** once α* is selected from
-  Stage 1 under Amendments 1–2, rerun baseline (α=1.00) and α* only on
-  seeds 43 and 44. Report mean ± SD and two-tailed t-test p-values.
+- **Stage 2 (paper verification):** rerun baseline (α=1.00) and the
+  winning α* only on literal seeds 43 and 44. **Not launched** — see
+  below, there is no qualifying α* to verify against baseline, so Stage 2
+  has no candidate and is not run.
 
-### Amendment 4 (proposed) — "Stays flat" tolerance band (would resolve undefined epsilon)
+### Amendment 4 — "Stays flat" tolerance band (resolves undefined epsilon)
 
-**Proposed ruling (unverified):** ±0.5 percentage points absolute Macro-F1.
+**Ruling:** ±0.5 percentage points absolute Macro-F1.
 
 **Rule:** any Macro-F1 change within [-0.5, +0.5] percentage points
 (absolute, not relative %) relative to baseline is logged as
@@ -2536,11 +2537,44 @@ safety-bound check in Amendment 2, not as a standalone Condition 3 test.
 
 ---
 
-**NOT effective.** None of the four proposed amendments above are
-confirmed. Condition 1 and Condition 3 verdicts computed under the
-original pre-amendment rules (2026-07-22 sign-off) remain the only
-verified basis for any decision. Any recomputation of Condition 1/3 under
-the proposed amendments above, and any resulting α* selection (or
-non-selection, including a "zero arms qualify" conclusion), is
-provisional and must not be acted on — reported to Naman for review and
-independent verification with Dr. Balaji, not treated as a real result.
+### Final Condition 1/2/3 table (recomputed under the confirmed amendments above)
+
+Condition 1 uses the corrected distance-of-mean-reward statistic
+(Amendment 1); Condition 2 (KS test on `r_morph` vs. `gate3_250_fixed`) is
+unaffected by any amendment and reused as-is; Condition 3 uses the
+HYP-F1-primary / Macro-F1-secondary scope (Amendment 2). All four values
+per row are independently recomputed from `logs/*/rl_training_log.csv` and
+`outputs/mentor_eval/trtr_condition3_*/trtr_generated_eval.json` — not
+carried forward from the earlier (wrong-statistic) 2026-07-23 table.
+
+| α | Cond.1 dist-of-mean (≤8%) | Cond.2 KS p (>0.05) | Cond.3 primary HYP-F1 Δ (≥+3.0pp) | Cond.3 secondary Macro-F1 Δ (≥-1.5pp) | Overall |
+|---|---|---|---|---|---|
+| 0.75 | +3.47% PASS | 0.760186 PASS | -12.19pp FAIL | -3.37pp FAIL | **disqualified** (Cond. 3) |
+| 0.50 | +14.15% FAIL | 0.240918 PASS | -96.05pp FAIL | -8.57pp FAIL | **disqualified** (Cond. 1 + Cond. 3) |
+| 0.25 | -7.22% PASS | 0.000058 FAIL | -0.90pp FAIL | -6.92pp FAIL | **disqualified** (Cond. 2 + Cond. 3) |
+| 0.00 | -1.37% PASS | 0.000025 FAIL | +3.95pp PASS | +0.17pp PASS | **disqualified** (Cond. 2) |
+
+**Result: zero of the four relaxation arms qualify as `reliability_alpha*`.
+Per the pre-registered fallback rule, `alpha=1.00` (the existing production
+baseline, `gate3_250_fixed`) remains the design.** Dr. Balaji pre-authorized
+this specific outcome in the same email: "I am 100% comfortable with
+α = 1.00 remaining the default... If none of the relaxation arms beat the
+baseline while satisfying all non-inferiority constraints, that is still a
+valid scientific finding. It proves the original reliability weighting was
+necessary and optimal." No further sign-off round is required for this
+conclusion specifically.
+
+Note for the writeup: α=0.50 is the only arm failing Condition 1 at all
+under the corrected statistic, and it separately shows the RL training
+log's HYP `r_diag` destabilizing late in training (grad_norm spike at
+iter=247, not recovered by the iter=250 checkpoint save — see the HYP
+collapse investigation elsewhere in this document/session), consistent
+with its HYP-F1 collapsing to exactly 0.0 in the generated-sample eval.
+Two independent conditions (A3 divergence, HYP-F1 collapse) converging on
+the same arm is a real signal, not coincidence, and worth its own
+paragraph rather than being buried in the table.
+
+Stage 2 (seeds 43/44) is not launched — there is no α* candidate to verify
+against baseline, so it has nothing to verify. `run_stage2_verification.sh`
+remains drafted-not-executed, gated on `ALPHA_STAR` never being filled in
+under this outcome.
