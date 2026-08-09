@@ -793,20 +793,41 @@ def train(cfg, log) -> float:
 
     n_classes = len(class_names)
 
-    # Hard, loud failure instead of silent mismatch: config.yaml's
-    # ptbxl.n_classes must agree with whatever class_names ended up being
-    # (real class_names.json, or the config.ptbxl.classes fallback above).
-    # A prior version of config.yaml declared 7 classes (incl. AFIB) while
-    # the real class_names.json had 6 -- that mismatch was only caught by
-    # a manual code audit, weeks later. This assertion turns any future
-    # recurrence into an immediate crash at the start of training instead.
-    # See Roadmap/Stage_0_Pipeline_Audit/Reports/Pipeline_Code_Audit.md Finding 6.
-    assert int(cfg.ptbxl.n_classes) == n_classes, (
-        f"config.yaml declares ptbxl.n_classes={int(cfg.ptbxl.n_classes)} but "
-        f"the class list actually in use has {n_classes} classes: {class_names}. "
-        f"These must agree -- fix config.yaml's ptbxl.classes/n_classes to match "
-        f"the real class_names.json (or vice versa if class_names.json is stale)."
-    )
+    # Optional class subset (--classes CLI flag, e.g. for a cheap NORM/MI-only
+    # experiment): restrict class_names/class_mapping to the requested subset
+    # before the n_classes-agreement assertion below, so that assertion is
+    # skipped for the (intentionally reduced) filtered case instead of firing
+    # on a legitimate subset selection.
+    train_classes = list(cfg.diffusion.get("train_classes") or [])
+    if train_classes:
+        missing = [c for c in train_classes if c not in class_names]
+        if missing:
+            raise ValueError(
+                f"--classes requested {missing}, not present in class_names.json "
+                f"({class_names})."
+            )
+        class_names   = train_classes
+        class_mapping = {code: cls for code, cls in class_mapping.items() if cls in class_names}
+        n_classes     = len(class_names)
+        log.info(f"--classes filter applied: training on {class_names} only "
+                 f"({n_classes} classes)")
+    else:
+        # Hard, loud failure instead of silent mismatch: config.yaml's
+        # ptbxl.n_classes must agree with whatever class_names ended up being
+        # (real class_names.json, or the config.ptbxl.classes fallback above).
+        # A prior version of config.yaml declared 7 classes (incl. AFIB) while
+        # the real class_names.json had 6 -- that mismatch was only caught by
+        # a manual code audit, weeks later. This assertion turns any future
+        # recurrence into an immediate crash at the start of training instead.
+        # See Roadmap/Stage_0_Pipeline_Audit/Reports/Pipeline_Code_Audit.md Finding 6.
+        # Skipped when --classes filters to a deliberate subset (above), since
+        # that intentionally makes n_classes disagree with cfg.ptbxl.n_classes.
+        assert int(cfg.ptbxl.n_classes) == n_classes, (
+            f"config.yaml declares ptbxl.n_classes={int(cfg.ptbxl.n_classes)} but "
+            f"the class list actually in use has {n_classes} classes: {class_names}. "
+            f"These must agree -- fix config.yaml's ptbxl.classes/n_classes to match "
+            f"the real class_names.json (or vice versa if class_names.json is stale)."
+        )
 
     # ── Load signals ──────────────────────────────────────────────────────────
     for p in (
@@ -1133,13 +1154,37 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train the Transformer-backbone conditional diffusion model.")
     parser.add_argument("--conditioning", type=str, default=None, choices=["adaln", "adaln_cross_attn"],
                         help="Conditioning variant. Defaults to cfg.diffusion.conditioning (adaln).")
+    parser.add_argument("--classes", type=str, default=None,
+                        help="Comma-separated subset of class names to train on, e.g. NORM,MI. "
+                             "Must be a subset of class_names.json. Defaults to all classes.")
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="Override cfg.diffusion.n_epochs.")
+    parser.add_argument("--output-dir", type=str, default=None,
+                        help="Root directory for this run's models/results/generated/logs "
+                             "(each created as a subdirectory). Defaults to cfg.paths.outputs.* / cfg.paths.logs, "
+                             "i.e. the shared baseline location.")
     args = parser.parse_args()
 
     cfg = load_config()
     if args.conditioning is not None:
         cfg.diffusion.conditioning = args.conditioning
+    if args.classes is not None:
+        cfg.diffusion.train_classes = [c.strip() for c in args.classes.split(",") if c.strip()]
+    if args.epochs is not None:
+        cfg.diffusion.n_epochs = args.epochs
+    if args.output_dir is not None:
+        out_root = Path(args.output_dir)
+        cfg.paths.outputs.models    = str(out_root / "models")
+        cfg.paths.outputs.results   = str(out_root / "results")
+        cfg.paths.outputs.generated = str(out_root / "generated")
+        cfg.paths.logs              = str(out_root / "logs")
+
     log = get_logger("step04_transformer_diffusion", cfg=cfg)
     log.info(f"Conditioning variant: {cfg.diffusion.get('conditioning', 'adaln')}")
+    if args.classes is not None:
+        log.info(f"Class subset: {cfg.diffusion.train_classes}")
+    if args.output_dir is not None:
+        log.info(f"Output root: {args.output_dir}")
     set_seed(cfg.seeds[0])
     snapshot_before_write(Path(cfg.paths.outputs.models))
 
