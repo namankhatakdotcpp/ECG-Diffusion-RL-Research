@@ -95,6 +95,7 @@ diffusion:
   n_layers: 6                 # kept for UNet backward-compat (unused by current Transformer backbone)
   d_ff: 1024                  # FFN hidden dimension (4× model_dim)
   dropout: 0.1
+  conditioning: adaln         # adaln (baseline) or adaln_cross_attn (disease-token cross-attention, additive)
   # Training
   n_epochs: 200
   batch_size: 32

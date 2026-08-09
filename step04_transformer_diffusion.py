@@ -30,6 +30,7 @@ Writes to:
 
 from __future__ import annotations
 
+import argparse
 import ast
 import csv
 import json
@@ -147,11 +148,18 @@ class TransformerBlock(nn.Module):
     """
     Pre-norm Transformer block (BERT/GPT-style).
 
-    Ordering: LN → MHA → residual → LN → FFN → residual
+    Ordering: LN → MHA → residual → [LN → cross-attn → gated residual] → LN → FFN → residual
     Pre-norm is more stable than post-norm for deep networks.
+
+    The cross-attention sub-layer (disease-token conditioning) is optional and
+    only active when use_cross_attn=True. It is gated by a zero-initialized
+    learnable scalar (re-zero / AdaLN-Zero style) so a freshly constructed
+    block with use_cross_attn=True produces bit-identical output to
+    use_cross_attn=False until training moves the gate away from zero.
     """
 
-    def __init__(self, model_dim: int, n_heads: int, d_ff: int, dropout: float):
+    def __init__(self, model_dim: int, n_heads: int, d_ff: int, dropout: float,
+                 use_cross_attn: bool = False):
         super().__init__()
         self.norm1 = nn.LayerNorm(model_dim)
         self.attn  = nn.MultiheadAttention(
@@ -168,11 +176,29 @@ class TransformerBlock(nn.Module):
         )
         self.adaLN = nn.Linear(2 * model_dim, 4 * model_dim)
 
-    def forward(self, x: Tensor, cond: Tensor) -> Tensor:
+        self.use_cross_attn = use_cross_attn
+        if use_cross_attn:
+            self.cross_norm = nn.LayerNorm(model_dim)
+            self.cross_attn = nn.MultiheadAttention(
+                embed_dim=model_dim, num_heads=n_heads,
+                dropout=dropout, batch_first=True,
+            )
+            # Re-zero gate: forward pass is identical to the no-cross-attn
+            # case at init (0 * anything = 0), so training starts from the
+            # existing AdaLN baseline and must earn any deviation from it.
+            self.cross_gate = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x: Tensor, cond: Tensor, disease_kv: Optional[Tensor] = None) -> Tensor:
         shift1, scale1, shift2, scale2 = self.adaLN(cond).chunk(4, dim=-1)
         h = modulate(self.norm1(x), shift1, scale1)
         h, _ = self.attn(h, h, h)
         x = x + h
+
+        if self.use_cross_attn and disease_kv is not None:
+            hc = self.cross_norm(x)
+            cross_out, _ = self.cross_attn(hc, disease_kv, disease_kv)
+            x = x + self.cross_gate * cross_out
+
         x = x + self.ff(modulate(self.norm2(x), shift2, scale2))
         return x
 
@@ -192,6 +218,18 @@ class ECGTransformerDiffusion(nn.Module):
         n_leads   = 12
         sig_len   = int(cfg.ptbxl.signal_length)
         patch_sz  = int(d.patch_size)
+
+        # ── Conditioning variant ────────────────────────────────────────────
+        # "adaln": existing baseline (unchanged). "adaln_cross_attn": adds a
+        # disease-token cross-attention sub-layer to every other Transformer
+        # block, in addition to (not instead of) the AdaLN pathway above.
+        self.conditioning = str(getattr(d, "conditioning", "adaln"))
+        if self.conditioning not in ("adaln", "adaln_cross_attn"):
+            raise ValueError(
+                f"Unknown cfg.diffusion.conditioning={self.conditioning!r}; "
+                f"expected 'adaln' or 'adaln_cross_attn'."
+            )
+        self.use_cross_attn = (self.conditioning == "adaln_cross_attn")
 
         # ── Patchification ───────────────────────────────────────────────────
         self.patch_embed = PatchEmbed1D(
@@ -213,15 +251,27 @@ class ECGTransformerDiffusion(nn.Module):
         self.null_class_index = n_classes
         self.class_emb = nn.Embedding(n_classes + 1, model_dim)
 
+        # Disease-token embedding table for cross-attention conditioning:
+        # one d_model-dimensional token per class, plus the same null/
+        # unconditional row (index == n_classes) used by class_emb, so CFG
+        # dropout on batch_cls applies identically to both pathways.
+        if self.use_cross_attn:
+            self.disease_token_emb = nn.Embedding(n_classes + 1, model_dim)
+
         # ── Transformer encoder (pre-norm BERT-style) ─────────────────────────
+        # Cross-attention is applied on every block: this is a first-pass
+        # hypothesis test (does disease-token cross-attention help at all),
+        # so every block gets a chance to pull in class-specific info rather
+        # than risking a negative result confounded by insufficient depth.
         self.blocks = nn.ModuleList([
             TransformerBlock(
                 model_dim=model_dim,
                 n_heads=int(d.n_heads),
                 d_ff=int(d.d_ff),
                 dropout=float(d.dropout),
+                use_cross_attn=self.use_cross_attn,
             )
-            for _ in range(int(d.n_transformer_layers))
+            for i in range(int(d.n_transformer_layers))
         ])
         self.final_norm = nn.LayerNorm(model_dim)
 
@@ -253,6 +303,11 @@ class ECGTransformerDiffusion(nn.Module):
         for block in self.blocks:
             nn.init.zeros_(block.adaLN.weight)
             nn.init.zeros_(block.adaLN.bias)
+            # Re-affirm the cross-attn gate is zero (already true from
+            # torch.zeros(1) at construction; explicit here so this pathway's
+            # zero-init isn't silently broken by a future refactor).
+            if block.use_cross_attn:
+                nn.init.zeros_(block.cross_gate)
 
     def forward(self, x_t: Tensor, t: Tensor, class_label: Tensor) -> Tensor:
         B = x_t.shape[0]
@@ -270,9 +325,16 @@ class ECGTransformerDiffusion(nn.Module):
         # Broadcast summed condition to every token (unchanged from prior PR)
         tokens = tokens + cond.unsqueeze(1)  # (B, 600, model_dim)
 
+        # Disease-token key/value for cross-attention blocks: one token per
+        # sample, shape (B, 1, model_dim). None for the "adaln" variant, so
+        # TransformerBlock.forward takes its unchanged no-cross-attn path.
+        disease_kv = None
+        if self.use_cross_attn:
+            disease_kv = self.disease_token_emb(class_label).unsqueeze(1)  # (B, 1, model_dim)
+
         # Transformer blocks — cond_film (decoupled concat) feeds adaLN; cond is NOT used here
         for block in self.blocks:
-            tokens = block(tokens, cond_film)
+            tokens = block(tokens, cond_film, disease_kv)
         tokens = self.final_norm(tokens)
 
         # Unpatchify: (B, 600, model_dim) → (B, 12, 1000)
@@ -1068,8 +1130,16 @@ def _generate_final_samples(cfg, log) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Train the Transformer-backbone conditional diffusion model.")
+    parser.add_argument("--conditioning", type=str, default=None, choices=["adaln", "adaln_cross_attn"],
+                        help="Conditioning variant. Defaults to cfg.diffusion.conditioning (adaln).")
+    args = parser.parse_args()
+
     cfg = load_config()
+    if args.conditioning is not None:
+        cfg.diffusion.conditioning = args.conditioning
     log = get_logger("step04_transformer_diffusion", cfg=cfg)
+    log.info(f"Conditioning variant: {cfg.diffusion.get('conditioning', 'adaln')}")
     set_seed(cfg.seeds[0])
     snapshot_before_write(Path(cfg.paths.outputs.models))
 
