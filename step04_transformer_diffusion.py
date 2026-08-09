@@ -935,6 +935,11 @@ def train(cfg, log) -> float:
     save_every    = int(d.save_every)
     log_interval  = int(cfg.logging.log_interval)
     saved_periodic_ckpts: list[Path] = []  # this run's own periodic checkpoints, oldest first
+    # Per-run override of the module-level KEEP_LAST_N_CHECKPOINTS default
+    # (--keep-checkpoints CLI flag), for runs that need the full epoch-by-
+    # epoch checkpoint history (e.g. diagnosing a collapse-then-regress
+    # curve) rather than the usual disk-conserving default.
+    keep_last_n_checkpoints = int(d.get("keep_checkpoints") or KEEP_LAST_N_CHECKPOINTS)
 
     log.info(f"Training: {n_epochs} epochs × {len(train_loader)} steps")
 
@@ -1035,13 +1040,13 @@ def train(cfg, log) -> float:
             log.info(f"Checkpoint → diffusion_ckpt_ep{epoch:04d}.pt")
             saved_periodic_ckpts.append(ckpt_path)
 
-            # Retention: keep only the most recent KEEP_LAST_N_CHECKPOINTS
+            # Retention: keep only the most recent keep_last_n_checkpoints
             # periodic checkpoints from this run. diffusion_best.pt is
             # untouched (saved separately below, never appended to this list).
-            while len(saved_periodic_ckpts) > KEEP_LAST_N_CHECKPOINTS:
+            while len(saved_periodic_ckpts) > keep_last_n_checkpoints:
                 stale_ckpt = saved_periodic_ckpts.pop(0)
                 stale_ckpt.unlink(missing_ok=True)
-                log.info(f"Pruned old checkpoint → {stale_ckpt.name} (keeping last {KEEP_LAST_N_CHECKPOINTS})")
+                log.info(f"Pruned old checkpoint → {stale_ckpt.name} (keeping last {keep_last_n_checkpoints})")
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
@@ -1163,6 +1168,12 @@ def main() -> None:
                         help="Root directory for this run's models/results/generated/logs "
                              "(each created as a subdirectory). Defaults to cfg.paths.outputs.* / cfg.paths.logs, "
                              "i.e. the shared baseline location.")
+    parser.add_argument("--keep-checkpoints", type=int, default=None,
+                        help=f"Number of most-recent periodic checkpoints to retain "
+                             f"(diffusion_best.pt is always kept separately). "
+                             f"Defaults to {KEEP_LAST_N_CHECKPOINTS}. Use a larger value "
+                             f"(e.g. equal to n_epochs/save_every) to keep the full "
+                             f"epoch-by-epoch history for post-hoc diagnosis.")
     args = parser.parse_args()
 
     cfg = load_config()
@@ -1172,6 +1183,8 @@ def main() -> None:
         cfg.diffusion.train_classes = [c.strip() for c in args.classes.split(",") if c.strip()]
     if args.epochs is not None:
         cfg.diffusion.n_epochs = args.epochs
+    if args.keep_checkpoints is not None:
+        cfg.diffusion.keep_checkpoints = args.keep_checkpoints
     if args.output_dir is not None:
         out_root = Path(args.output_dir)
         cfg.paths.outputs.models    = str(out_root / "models")
