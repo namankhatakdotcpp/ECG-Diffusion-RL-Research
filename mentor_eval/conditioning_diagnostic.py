@@ -107,7 +107,7 @@ def _train_classifier(X_train, y_train, X_val, y_val, device, log, n_classes=4, 
     return model
 
 
-def run(cfg, log, guidance_scale=None) -> None:
+def run(cfg, log, guidance_scale=None, ckpt_path=None) -> None:
     snapshot_before_write(OUT_DIR)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     set_seed(42)
@@ -136,7 +136,11 @@ def run(cfg, log, guidance_scale=None) -> None:
         log.info(f"Classifier cached → {cached_clf}")
 
     # ── Load diffusion checkpoint ──────────────────────────────────────────────
-    ckpt_path = Path(cfg.paths.outputs.models) / "diffusion_best.pt"
+    # Defaults to the shared baseline location unless --ckpt overrides it
+    # (e.g. for a checkpoint trained under a --output-dir like
+    # outputs/crossattn_normal_mi/models/diffusion_best.pt).
+    if ckpt_path is None:
+        ckpt_path = Path(cfg.paths.outputs.models) / "diffusion_best.pt"
     loaded = load_checkpoint(ckpt_path, cfg)
     if loaded is None:
         print(
@@ -230,10 +234,14 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--guidance-scale", type=float, default=None,
                         help="CFG guidance scale. None = no CFG (default behavior).")
+    parser.add_argument("--ckpt", type=str, default=None,
+                        help="Path to a diffusion checkpoint. Defaults to "
+                             "outputs/models/diffusion_best.pt (the shared baseline location).")
     args = parser.parse_args()
     cfg = load_config()
     log = get_logger("conditioning_diagnostic", cfg=cfg)
-    run(cfg, log, guidance_scale=args.guidance_scale)
+    ckpt_path = Path(args.ckpt) if args.ckpt else None
+    run(cfg, log, guidance_scale=args.guidance_scale, ckpt_path=ckpt_path)
 
 
 if __name__ == "__main__":

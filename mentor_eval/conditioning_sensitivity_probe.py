@@ -41,12 +41,19 @@ OUT_DIR = Path("outputs/conditioning_analysis")
 
 
 def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--ckpt", type=str, default=None,
+                        help="Path to a diffusion checkpoint. Defaults to "
+                             "outputs/models/diffusion_best.pt (the shared baseline location).")
+    args = parser.parse_args()
+
     cfg = load_config()
     log = get_logger("conditioning_sensitivity_probe", cfg=cfg)
     torch.manual_seed(0)
 
-    # Same checkpoint path used by all other mentor_eval scripts
-    ckpt_path = Path(cfg.paths.outputs.models) / "diffusion_best.pt"
+    # Same checkpoint path used by all other mentor_eval scripts, unless --ckpt overrides it
+    ckpt_path = Path(args.ckpt) if args.ckpt else Path(cfg.paths.outputs.models) / "diffusion_best.pt"
     loaded = load_checkpoint(ckpt_path, cfg)
     if loaded is None:
         print(
