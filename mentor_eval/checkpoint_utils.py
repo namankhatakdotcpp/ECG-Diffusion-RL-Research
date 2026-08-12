@@ -7,6 +7,7 @@ mentor_eval scripts don't duplicate model-construction logic.
 
 from __future__ import annotations
 
+import copy
 import sys
 from pathlib import Path
 from typing import Optional
@@ -15,7 +16,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from step04_transformer_diffusion import (
-    GaussianDiffusion, EMA, generate_ecg, _resolve_device,
+    ECGTransformerDiffusion, GaussianDiffusion, EMA, generate_ecg, _resolve_device,
 )
 
 STAGE3_CANDIDATES_DIR = (
@@ -53,8 +54,30 @@ def load_checkpoint(ckpt_path: Path, cfg) -> Optional[LoadedCheckpoint]:
     n_classes = ckpt["n_classes"]
     variant = ckpt.get("variant", "baseline")
 
-    model = build_variant_model(cfg, n_classes=n_classes, variant=variant).to(device)
-    model.load_state_dict(ckpt["model"], strict=True)
+    # step04_transformer_diffusion.py never writes a "variant" key, so any
+    # checkpoint trained there (adaln or adaln_cross_attn) falls through to
+    # variant="baseline" above, which build_variant_model constructs as
+    # ECGTransformerDiffusionVariant with use_cross_attn=False -- missing
+    # the disease_token_emb/cross_attn/cross_norm/cross_gate parameters an
+    # adaln_cross_attn checkpoint's state_dict actually has. Detect that
+    # case directly from the state_dict's own keys (source of truth, not
+    # a config guess) and construct the real ECGTransformerDiffusion class
+    # with conditioning="adaln_cross_attn" instead. Everything else
+    # (Stage 3 candidate checkpoints, plain adaln step04 checkpoints) is
+    # unaffected -- unchanged build_variant_model path, still strict=True.
+    state_dict = ckpt["model"]
+    is_cross_attn = any(
+        "cross_attn" in k or "cross_gate" in k or "disease_token" in k
+        for k in state_dict.keys()
+    )
+
+    if is_cross_attn:
+        cfg_cross = copy.deepcopy(cfg)
+        cfg_cross.diffusion.conditioning = "adaln_cross_attn"
+        model = ECGTransformerDiffusion(cfg_cross, n_classes=n_classes).to(device)
+    else:
+        model = build_variant_model(cfg, n_classes=n_classes, variant=variant).to(device)
+    model.load_state_dict(state_dict, strict=True)
     model.eval()
 
     ema = EMA(model, decay=float(cfg.diffusion.ema_decay))
