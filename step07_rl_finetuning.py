@@ -1859,6 +1859,12 @@ def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(description="RL fine-tuning of the ECG diffusion model.")
     parser.add_argument(
+        "--config", type=str, default="config.yaml",
+        help="Path to the reward/training config YAML (default: config.yaml). "
+             "Lets a sweep-arm variant (e.g. a reliability_alpha ablation) be "
+             "run without overwriting the production config.",
+    )
+    parser.add_argument(
         "--smoke-test", action="store_true",
         help="Run a short (rl.smoke_test_iterations) correctness check instead "
              "of the full training schedule — verifies the policy actually "
@@ -1913,8 +1919,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    cfg = load_config()
+    cfg = load_config(args.config)
     log = get_logger("step07_rl_finetuning", cfg=cfg)
+    log.info(f"Loaded config from {args.config}")
     set_seed(int(cfg.seeds[0]))
 
     best_reward = train(

@@ -2027,3 +2027,554 @@ prioritizing reward-quality-alone as the primary explanation for
 HYP/OTHER collapse. This conclusion is based on a single-seed experiment
 and may be revisited if multi-seed evidence becomes warranted (e.g., for
 publication).
+
+## `diffusion_rl_selected_UNVALIDATED.pt` — UNVALIDATED label gated on Investigation_03, not indefinite (2026-07-21)
+
+The `_UNVALIDATED` rename (see the "Renamed the selected checkpoint..."
+entry above) has carried no explicit removal condition since Stage 4
+completed. Nothing in `Investigation_02_OTHER_Collapse_Mechanism.md`
+gives grounds to lift it -- if anything, that investigation's unreconciled
+divergence between `classification_validation.py` (generated macro F1
+declined 0.3339 -> 0.2149, checkpoints 370 -> 380) and the TSTR path
+(macro and OTHER F1 both improved over the same interval) is a reason to
+keep the label, not remove it.
+
+**Decision**: the label stays until `Investigation_03_TSTR_vs_
+ClassificationValidation_Divergence.md` resolves which signal to trust.
+Two possible outcomes:
+- If Investigation_03 finds the TSTR-favorable read is the trustworthy
+  one (e.g. the classification_validation.py decline traces to a
+  pipeline artifact, sample-count/class-balance mismatch, or bug):
+  promotion of this checkpoint (or a later one) can be reconsidered under
+  that corrected signal.
+- If Investigation_03 confirms the classification_validation.py decline
+  is real: `_UNVALIDATED` stands, and the finding likely hardens into a
+  documented rejection rather than a pending question.
+
+No other event (elapsed time, additional Stage 4 iterations run, etc.)
+removes the label absent this resolution.
+
+## Gate CLOSED: `diffusion_rl_selected_UNVALIDATED.pt` rejection hardens from pending to documented (2026-07-21, follow-up)
+
+Investigation_03's Phase 2 (matched-sample-count rerun, commit `b0ce0f6`)
+resolved the gate above. Per its pre-registered decision criteria, the
+outcome was **UNEXPLAINED**: `classification_validation.py`'s macro-F1
+decline (370→380) persisted at ~80% of its original magnitude (−0.0947
+vs. −0.1190) even with generated-sample count matched to TSTR's (500 =
+500). Sample count was directly tested and ruled out as an artifact.
+
+This fires the gate's second pre-registered outcome, not the first: the
+`classification_validation.py` decline is **real**, not a pipeline
+artifact or sample-count mismatch. There is no corrected signal under
+which promotion of this checkpoint should be reconsidered.
+
+**Decision**: `diffusion_rl_selected_UNVALIDATED.pt`'s rejection is now a
+**documented, closed finding** rather than a pending question gated on
+future investigation. The checkpoint should not be promoted. This does not
+mean TSTR's improving trend is wrong — Investigation_03 also established
+(Finding 5, and the Phase 2 elimination result) that the two metrics
+measure genuinely different properties of generation quality
+(train-real/test-generated recognizability vs. train-generated/test-real
+training utility) that can move in opposite directions on the same model
+transition. The rejection stands on the real-classifier-recognizability
+decline specifically, independent of whatever TSTR shows.
+
+**Implication for reward design going forward**: a reward term built on
+TSTR-style utility alone would not have flagged this checkpoint's real
+regression. Any reward-design work building on the Mentor Classifier /
+TRTR-style real-classifier signal (the one that already gates checkpoint
+selection per `rl.checkpoint_selection.metric`, see the "Early stopping
+and checkpoint selection" entry above) remains the safer default;
+TSTR-only signals should not be treated as a sufficient proxy for
+generation quality on their own.
+
+## Reliability-weight validation study — pre-registration FINAL — signed off with Dr. Balaji, 2026-07-22
+
+**Status: FINAL — signed off.** All threshold, decision-rule, and scope
+questions below were resolved in a 2026-07-22 meeting with Dr. Balaji;
+every `[NEEDS SIGN-OFF]` placeholder has been replaced with the agreed
+number or rule from that meeting — none invented or inferred. See
+`Roadmap/Stage_4_Optimization/Reward_Design_v2.md` Section 4a for the
+full design rationale and Dr. Balaji's decision (2026-07-22, quoted
+verbatim there) to run this as a 5-point sweep rather than pick one
+setting in advance.
+
+### The 5 arms
+
+Run-tag convention locked: `reliability_alpha{XXX}` where `XXX` is the
+alpha value with its decimal point removed, zero-padded to 3 digits —
+paired 1:1 with the `config_reliability_sweep_alpha{X}.yaml` file names
+already in use.
+
+| Arm | `reliability_alpha` | `reliability[HYP]` | Config file | Run-tag | Status |
+|---|---|---|---|---|---|
+| 1 | 1.00 | 0.3755 | `config.yaml` (production, unchanged) | `gate3_250_fixed` (existing, NOT `reliability_alpha100`) | existing baseline — reused, not re-run (see below) |
+| 2 | 0.75 | 0.5317 | `config_reliability_sweep_alpha0.75.yaml` | `reliability_alpha075` | new, not yet run |
+| 3 | 0.50 | 0.6878 | `config_reliability_sweep_alpha0.50.yaml` | `reliability_alpha050` | new, not yet run |
+| 4 | 0.25 | 0.8439 | `config_reliability_sweep_alpha0.25.yaml` | `reliability_alpha025` | new, not yet run |
+| 5 | 0.00 | 1.0000 | `config_reliability_sweep_alpha0.00.yaml` | `reliability_alpha000` | new, not yet run |
+
+All 4 new config files are byte-for-byte identical to production
+`config.yaml` except the single `reliability_alpha` line (diffed and
+verified — see commit for this pre-registration draft). `reliability[HYP]`
+values confirmed by direct instantiation of `DiagnosticUtilityReward`
+against each file, not hand-computed.
+
+**Arm 1 reuse — verified, not assumed.** Two pre-existing 250-iteration
+runs exist on disk (`gate3_250` and `gate3_250_fixed`), and they are
+**not equivalent** — only one is usable:
+
+- `gate3_250` (2026-07-09 23:16–23:54): **not usable**. Its
+  `rl_training_log.csv` shows HYP `r_diag` = exactly 0.5 for all 43
+  logged occurrences (std=0.0) — the `DiagnosticUtilityReward` neutral
+  fallback for "classifier unavailable" (`step06_reward_function.py`'s
+  `compute()` returns 0.5 when `self.available` is False), not real
+  per-class confidence. This run predates the fixes in `5b628ff`/`e57a296`/
+  `671c86a` (TRTR classifier save-path bug, `per_class_f1` missing from
+  the eval JSON) — it ran before those existed, so its diagnostic reward
+  channel was never actually live.
+- `gate3_250_fixed` (2026-07-10 02:31–03:11): **usable, confirmed
+  equivalent to arm 1's intended conditions**. HYP `r_diag` shows real
+  variation (43 unique values, mean 0.2899, std 0.1456; iter=13 reads
+  exactly 0.0, matching the "iter=13 grad_norm spike, r_diag dropped
+  correspondingly" finding in the Gate 3 smoke-test entry above) — a
+  live classifier producing real confidence scores. Confirmed on every
+  axis that must match for sweep comparability:
+  - Seed: `config.yaml`'s `seeds: [42, 123, 456]` (first entry, 42) —
+    unchanged in every commit since (checked via `git log -- config.yaml`).
+  - Iterations: 250 (25 checkpoint files at `save_every_iters=10`, plus
+    `rl_ckpt_iter0250.pt` and `checkpoint_eval_lightweight_iter0250.json`
+    present).
+  - Base checkpoint: `outputs/models/diffusion_best.pt`, mtime
+    2026-07-02 — predates both runs, unchanged since, still the current
+    S3-001 base checkpoint.
+  - Reward weights: `diag/a3/morph/real/hrv = 0.40/0.15/0.16/0.16/0.13`
+    — identical in the commit active at the time (`7ba35df`) and today;
+    only commit touching `config.yaml` since is `9311d67` (the
+    `reliability_alpha` rename itself, a single-line change).
+  - Reliability setting: `use_reliability_scaling: true` at run time —
+    bit-identical to `reliability_alpha=1.00` per Step 2's identity-check
+    test (`test_alpha_1_0_is_true_no_op`).
+  - `trtr_classifier_eval.json`'s HYP `per_class_f1` = 0.3755, matching
+    today's file exactly (`outputs/models/trtr_classifier_eval.json`).
+
+  **Decision: reuse `gate3_250_fixed` as arm 1's data point. Do not
+  re-run arm 1, and do not create a `reliability_alpha100` directory** —
+  it would duplicate GPU time on already-equivalent conditions.
+
+**`--config` gap — resolved.** `step07_rl_finetuning.py` now has a
+`--config` CLI flag (commit `123ca25`), verified end-to-end (CLI →
+`load_config()` → `get_reward()` → `DiagnosticUtilityReward` reliability
+vector) for both the flag and its default. The prior "no run-time
+mechanism to consume arms 2-5" gap noted in this document is closed.
+
+**Execution**: `bash run_reliability_sweep.sh` (repo root) runs arms 2-5
+sequentially — one reviewed command, not four manually-typed
+invocations. See the script's own header comment for usage/env vars.
+Validated (syntax check, all 4 constructed commands echoed and diffed
+against the table above, a disposable 1-iteration smoke test of the
+archiving mechanism, and a forced-failure test confirming the script
+halts immediately and does not continue to a later arm) but **not yet
+invoked for a real arm** — pending threshold sign-off below.
+
+### Burn-in / convergence check (Dr. Balaji's design-approval caveat)
+
+Dr. Balaji approved the 5-arm design (2026-07-22) with one caveat:
+confirm 250 iterations sits well past the initial policy-transient
+burn-in phase rather than just early-stage fluctuation, checked against
+existing baseline runs. Checked against `gate3_250_fixed`'s
+`rl_training_log.csv` (the only real-classifier 250-iteration run on
+record):
+- 20-iteration windowed means of `reward_total` rise from ~0.25 (iters
+  1-20) to a plateau of ~0.32-0.37 by iters 101-160, then hold flat
+  through 241-250 (~0.33) — the climb is confined to roughly the first
+  100-150 iterations.
+- Linear trend over the back half (iters 151-250): slope
+  -0.0006 ± 0.0002 per iteration on `reward_total` — indistinguishable
+  from a flat plateau given the per-iteration noise (std ≈0.063), not a
+  continuing transient.
+
+**Conclusion: 250 iterations is past burn-in** (which ends by roughly
+iteration 100-150 in the only comparable real run) — caveat satisfied.
+
+### Run parameters (same across all arms except `reliability_alpha`)
+
+- **Iteration count**: 250, Gate-3 scale — same as
+  `python step07_rl_finetuning.py --n-iterations 250 --run-tag gate3_250_fixed`
+  (the valid Gate 3 run — NOT `--run-tag gate3_250`, see the arm-1-reuse
+  finding above for why the two differ).
+- **Seed**: `cfg.seeds[0]` = 42 (`config.yaml`'s `seeds: [42, 123, 456]`,
+  first entry — same seed `gate3_250_fixed` and `stage4_finetune_v1` used).
+- **Base checkpoint**: `outputs/models/diffusion_best.pt` (S3-001) — read
+  unconditionally regardless of `--run-tag`, confirmed in the Gate 3 setup
+  entry above ("Still reads `diffusion_best.pt` from the untagged models
+  dir").
+- **Run-tag convention**: locked as `reliability_alpha{XXX}` (Section
+  above) via `run_reliability_sweep.sh`, using the same `--run-tag`
+  isolation mechanism Gate 3 used so outputs land in dedicated
+  `outputs/models/` / `logs/` / `outputs/results/` subdirectories, not
+  colliding with `stage4_finetune_v1` or `gate3_250_fixed`'s own outputs.
+- **Everything else** (other 4 reward weights, PPO hyperparameters,
+  `save_every_iters`, `eval_checkpoints`, etc.): unchanged from production
+  `config.yaml`, confirmed by the single-line diffs above.
+
+### Primary endpoint (Dr. Balaji, 2026-07-22)
+
+**Option C, selected.** Find the minimum relaxation of reliability
+weighting (smallest decrease from `alpha=1.00`) that yields a
+statistically significant increase in diagnostic recovery (`r_diag`)
+while preserving physiological fidelity — not "maximize `r_diag`" and
+not "aggressively minimize alpha for its own sake." Paper framing:
+*how much reliability-weighting can we safely relax to recover
+diagnostic fidelity without violating physical invariants?* This
+governs which metrics below are primary (`r_diag`, TRTR accuracy/
+macro-F1) vs. safety-rail / non-inferiority bounds (A3, morphology, HRV,
+PPO stability) in the decision rule.
+
+### Metric categories — thresholds finalized (Dr. Balaji, 2026-07-22)
+
+**1. Per-class windowed `r_diag` (HYP)** — via commit `3bbac0c`'s existing
+windowed mean/min/max/count monitoring.
+- Gate 3 (alpha=1.00, 250 iter): extended near-zero stretch iter 166-215
+  (~50 iterations), but **recovered** to baseline by run's end — no
+  correlated PPO instability (`grad_norm`/`KL`/`clip_fraction` all healthy
+  throughout that window).
+- `stage4_finetune_v1` (alpha=1.00, 1000 iter, for scale reference only —
+  not directly comparable at 250 iter): first-half mean 0.252 → second-half
+  mean 0.060, last-10 values
+  `[0.0033, 0.0019, 0.0021, 0.114, 0.062, 0.081, 0.0016, 0.157, 0.037, 0.00001]`
+  — **did not recover**, the run's own FAILURE verdict.
+- **Threshold (signed off):** HYP `r_diag` windowed mean, arm vs.
+  `alpha=1.00` baseline — **≥+5% absolute = success**, **+2% to +5% =
+  marginal**, **<+2% = failure**. Must be a statistically significant
+  increase, not just a point estimate above the line.
+
+**2. TRTR-classifier generated-data accuracy / macro-F1** (frozen
+classifier — same `trtr_classifier_eval.json` across all 5 arms, per
+Step 1's confirmation that this file is loaded once and never retrained).
+- Current recorded values (`outputs/models/trtr_classifier_eval.json`):
+  overall accuracy **0.6715**, macro-F1 **0.5968**, per-class F1
+  NORM/MI/STTC/CD/HYP/OTHER = **0.7924 / 0.6446 / 0.6121 / 0.5846 / 0.3755
+  / 0.5714**.
+- **Threshold (signed off):** generated-data classifier accuracy AND
+  macro-F1 must each improve by **≥+3% absolute** relative to the
+  `alpha=1.00` arm before that arm is considered superior on this axis
+  (minimum requirement, not the primary endpoint itself).
+
+**3. A3 subband Mahalanobis divergence** (the primary hacking-detection
+axis, per Reward_Design_v2.md Section 6's revised 2-signal buckets —
+`r_a3` itself was ruled out as a hacking-flag axis, see below).
+- Reward_Design_v2.md Section 7: `r_diag` vs `r_a3` raw correlation across
+  HYP's 177 logged Stage-4 iterations = **-0.86**, but the
+  first-differenced (trend-removed) residual correlation is only
+  **-0.28** — most of the raw anti-correlation is an artifact of opposite
+  whole-run trends (`r_diag` vs. iteration r=-0.61, `r_a3` vs. iteration
+  r=+0.73), not a tight moment-to-moment mechanical link.
+- `r_a3` itself: std=0.286, range 0.002-0.821 over the same 177 iterations.
+- **Threshold (signed off):** A3 Mahalanobis divergence must not
+  increase by **more than 8%** relative to the `alpha=1.00` baseline —
+  exceeding this disqualifies the arm regardless of `r_diag` gains (a
+  reward-hacking trigger, see the disqualifying-conditions subsection
+  below).
+
+**4. Morphology / HRV reward trajectories** (physiological anchors).
+- Reward_Design_v2.md Section 6: `r_morph` is usable and near-independent
+  of `r_diag` (std=0.115, range 0.27-0.95, r=-0.11 vs. `r_diag`) — this is
+  the second half of the "clean success" vs. "structural hacking flag"
+  bucket pair (Section 6): clean success = `r_diag` rises AND `r_morph`
+  holds/improves; hacking flag = `r_diag` rises while `r_morph` degrades.
+- `r_hrv` is a **dead signal** for HYP specifically (mean 3.5e-05 over all
+  177 iterations) — structurally uninformative, excluded from the
+  hacking-check per Section 6. Not scored per-arm here; included only so
+  a near-zero HRV trajectory in the sweep isn't mistaken for a new finding.
+- **Threshold (signed off):** `r_morph` and HRV distributions must be
+  **non-inferior** to baseline — two-sample Kolmogorov-Smirnov test
+  against the `alpha=1.00` arm, **p > 0.05** required (no statistically
+  significant distributional shift). HRV remains excluded from scoring
+  per Section 6 (dead signal for HYP) but the non-inferiority test still
+  applies as a safety rail per Dr. Balaji's sign-off.
+
+**5. `grad_norm` / KL correlation** (rules out PPO-instability confound,
+same method as the Gate 3 iter=13 vs. iter=166-215 distinction above).
+- Gate 3 healthy baseline: `grad_norm` roughly **0.05-0.15**; the one
+  anomalous spike (iter=13) reached **0.507**, self-corrected within one
+  iteration.
+- Gate 3 / Stage 4 pre-registered KL bound: roughly **0.003-0.06** as the
+  healthy range; "divergence" defined there as sustained growth beyond
+  **~10x** that range.
+- **Threshold (signed off):** Gate 3 healthy ranges apply verbatim at
+  250-iteration sweep scale — mean KL **≤0.05**; max `grad_norm` within
+  **1.5×** of the `alpha=1.00` baseline arm's grad_norm variance.
+- **Note — tightening, not a contradiction.** Stage 4's pre-registration
+  (line 1171 above, `stage4_finetune_v1` entry) used looser language:
+  "KL stays within the same order of magnitude observed in Gate 3
+  (roughly 0.003-0.06 range)." The new **mean KL ≤0.05** bound is a
+  specific pass/fail number chosen *inside* that already-approved
+  0.003-0.06 range, not a new or conflicting bound — a reader comparing
+  the two should read this as Stage 4's qualitative range now given a
+  precise boundary for this sweep, not a second, different criterion.
+
+### Reward-hacking disqualifying conditions (Dr. Balaji, 2026-07-22)
+
+An arm is automatically disqualified as reward hacking if **any** of the
+following three quantitative triggers fire during or at the end of its
+250-iteration run:
+1. **Spectral/feature collapse** — A3 Mahalanobis divergence increases
+   by more than 8% over the `alpha=1.00` baseline (same threshold as
+   metric category 3 above).
+2. **Physiological invariant violation** — `r_morph` or HRV distribution
+   comparison against ground truth yields p < 0.05 (fails the
+   non-inferiority test in metric category 4 above).
+3. **Confidence exploitation (calibration divergence)** — `r_diag`
+   increases by more than 5% while TRTR macro-F1 simultaneously drops or
+   stays flat — the diagnostic head's confidence rising without actual
+   feature-representation quality improving.
+
+### Decision rule (Dr. Balaji, 2026-07-22, verbatim — captured before the threshold-filling conversation)
+
+> "I also agree with Option 2. Instead of fixing one reliability weight,
+> we should make it part of the validation study and compare multiple
+> settings (100%, 75%, 50%, 25%, 0%). If the results show that removing
+> reliability scaling consistently performs better without introducing
+> reward hacking, then we can justify moving to Option 3."
+
+**Superseded 2026-07-22 — Pareto-dominance with non-inferiority bounds
+replaces the strict-winner operationalization above.** The original
+"must win every metric" framing was recognized as likely to deadlock —
+RL sweeps rarely produce a strict winner across 5+ metrics
+simultaneously. Official rule, Dr. Balaji, 2026-07-22, verbatim:
+
+> "We adopt candidate setting α* if and only if it achieves a superior
+> outcome on the primary endpoint (r_diag improvement ≥5%) compared to
+> baseline (α=1.00), while incurring no disqualifying violations across
+> secondary safety bounds (A3 Mahalanobis ≤8%, physiological
+> non-inferiority p>0.05, and PPO stability within bounds). If multiple
+> settings qualify, select the candidate with the highest α (minimal
+> weight relaxation)."
+
+Operationalized: scan arms in descending α order (0.75, 0.50, 0.25,
+0.00); the first arm meeting the primary-endpoint threshold (r_diag
+≥+5%, statistically significant) with zero disqualifying violations
+(reward-hacking subsection above) is the selected `reliability_alpha*`.
+If none qualify, `alpha=1.00` (the existing baseline) remains the
+design.
+
+### Phase-transition contingency (Dr. Balaji, 2026-07-22)
+
+**Pre-approved for one intermediate sub-arm.** If a sharp, non-linear
+cliff appears between two adjacent arms (e.g. stable at α=0.50 but a
+drastic surge/collapse at α=0.25), a single midpoint arm (e.g. α=0.375)
+may be run **without convening a second sign-off meeting**. Protocol:
+log the trigger event (which two arms, which metric, the magnitude of
+the discontinuity) in this document, then launch the run using the same
+`run_reliability_sweep.sh` mechanism with a one-off config/run-tag
+following the existing `reliability_alpha{XXX}` convention.
+
+### Two-stage execution & multi-seed plan (Dr. Balaji, 2026-07-22)
+
+**Approved.** This 5-arm sweep is Stage 1 (exploration), run on
+`cfg.seeds[0]`=42 only, per arm. Stage 2 (verification) follows only
+after Stage 1 identifies the winning `alpha*` via the decision rule
+above:
+
+- **Stage 1 — Exploration**: the 5-arm sweep described in this
+  document, seed 42, 250 iterations each. Identifies `alpha*`.
+- **Stage 2 — Verification (paper baseline)**: `alpha*` and the
+  `alpha=1.00` baseline, each re-run across 4 additional seeds (5 total
+  per setting).
+
+  **UNVERIFIED — PROPOSED 2026-07-23, NOT CONFIRMED WITH DR. BALAJI —
+  see "Proposed Protocol Amendments" section below (Amendment 3).** A
+  draft resolution exists: Stage 1 = seed 42 only (already run, matches
+  reading 2 below — no rerun needed). Stage 2 = baseline + `alpha*` on
+  seeds **43 and 44** specifically (literal values, not `config.yaml`
+  list indices) — 3 total seeds per setting, not 5. This is a proposal
+  only and has not been independently confirmed with Dr. Balaji through
+  any channel outside an AI chat session; do not treat it as resolved
+  until confirmed. It would supersede the "4 additional seeds / 5
+  total" framing originally drafted in this bullet and the "Sufficiency
+  for the paper" bullet below, if and when confirmed. Original
+  open-question text preserved unmodified below for the audit trail:
+
+  ~~**OPEN QUESTION — unresolved, blocks Stage 2 only (not Stage 1):**
+  Dr. Balaji's phrasing ("Seed 0" for Stage 1, "Seeds 1-4" for Stage 2)
+  does not map cleanly onto this project's actual seed convention.
+  `config.yaml` has `seeds: [42, 123, 456]` — a 3-entry list — and this
+  sweep's own pre-registration (Section above, "Run parameters") already
+  locks Stage 1 to `cfg.seeds[0]` = **42**, not literal seed value 0.
+  Two readings of "Seed 0"/"Seeds 1-4" are possible and have not been
+  distinguished:
+  1. "Seed 0" means literal seed value `0` (not `42`, not in
+     `config.yaml` at all) — in which case Stage 1 as already run would
+     need to be re-run under seed `0` for internal consistency with
+     Stage 2's "Seeds 1-4" also being literal values 1/2/3/4.
+  2. "Seed 0" means *index* 0 of some seed list — consistent with this
+     sweep's actual Stage 1 (`cfg.seeds[0]`=42) — in which case "Seeds
+     1-4" means indices 1-4 of a 5-entry seed list that doesn't exist
+     yet (`config.yaml` only has 3 entries/indices 0-2).
+  Either reading requires a decision this document does not make:
+  extend `config.yaml`'s `seeds` list to (at least) 5 entries with
+  specific values, or treat Stage 2's seeds as arbitrary values Naman
+  supplies independent of `config.yaml`. **Stage 1 (this document's
+  5-arm sweep) is unaffected either way** — it already reuses
+  `cfg.seeds[0]`=42 exactly as pre-registered, consistent with reading
+  2. This is flagged for Naman to resolve (a quick follow-up with Dr.
+  Balaji, or Naman's own call under reading 2) before Stage 2 is
+  planned or executed — not something to guess at here.~~
+- **Sufficiency for the paper — see Amendment 3 (unverified proposal)**:
+  original text called for "5 total seeds"; a proposed, unconfirmed
+  2026-07-23 revision suggests 3 total seeds (42, 43, 44) with a
+  two-tailed t-test, mean ± SD. Do not act on this until independently
+  confirmed with Dr. Balaji.
+
+### Explicitly not done here
+
+- **UPDATE 2026-07-23.** All 4 sweep arms (`reliability_alpha075/050/025/000`)
+  ran to completion, 250/250 iterations each, seed 42, verified (final
+  checkpoint present, `rl_training_log.csv` at exactly 251 lines,
+  archived) — see the Proposed Protocol Amendments section below for
+  Condition 1/2/3 verdicts computed under a draft, unconfirmed rule
+  set. Original text preserved for the audit trail: ~~No real
+  250-iteration sweep arm has been run. (Disposable 1-iteration dry
+  runs under throwaway tags were used to verify `--config` plumbing and
+  the launcher script's mechanics — each cleaned up immediately after,
+  none under a `reliability_alpha{XXX}` tag.)~~
+- No threshold numbers invented for the original pre-registration —
+  every value above is Dr. Balaji's 2026-07-22 sign-off, not inferred
+  or guessed. (The 2026-07-23 amendment thresholds below are a
+  separate, as-yet-unconfirmed matter — see the Proposed Protocol
+  Amendments section.)
+- Stage 2 seed values: **a proposed resolution exists, see Amendment 3
+  — not yet confirmed** (seeds 43 and 44, literal values). Original
+  text preserved: ~~No Stage 2 seed values selected yet (2 additional
+  seeds beyond `config.yaml`'s existing 123/456 need picking) —
+  deferred to whoever executes Stage 2, not decided in this
+  document.~~
+- `step07_rl_finetuning.py` did change (commit `123ca25`, `--config` CLI
+  flag) — a prerequisite infrastructure change, not a reward-logic or
+  hyperparameter change. `step06_reward_function.py`'s reward logic
+  itself is unchanged since commit `9311d67`.
+
+## Protocol Amendments — PI Sign-Off, 2026-07-24 (confirmed via email, see `correspondence/2026-07-24_balaji_protocol_ruling.md`)
+
+**Status: CONFIRMED.** The four protocol points below were resolved by Dr.
+Balaji via email on 2026-07-24, replying directly to Naman's Track A
+questions — full text preserved verbatim at
+`Roadmap/Stage_4_Optimization/correspondence/2026-07-24_balaji_protocol_ruling.md`.
+This supersedes the earlier `f5a85a5` draft, which correctly labeled these
+same four points as proposed-but-unverified pending independent
+confirmation. An even earlier version of this document (commit `dacf6e5`,
+since amended) had stated these as resolved PI fact based on content that
+turned out to be AI-fabricated, not a real ruling — that was caught and
+corrected before it propagated. This time the ruling is grounded in an
+actual received email, cited above as a standing artifact rather than
+resting on any AI chat's account of what was said. Original 2026-07-22
+wording is preserved unmodified above this section for the audit trail;
+these amendments supersede it going forward.
+
+### Amendment 1 — A3 Mahalanobis aggregation statistic (resolves Condition 1 ambiguity)
+
+**Ruling:** Distance computed from the mean reward — option (b), NOT mean
+of per-sample inverted distances (option (a), which Dr. Balaji's email
+explicitly rejects as "mathematically unstable," citing non-zero epsilon
+cliffs turning a +3.5% shift into +35.8% as "an artifact of the metric's
+form, not actual feature-space distortion").
+
+**Rule:** The existing ≤8% threshold (metric category 3, above) applies to
+the distance-of-the-mean-reward statistic: compute `mean(r_a3)` across all
+logged rows in `rl_training_log.csv` for the arm, THEN apply
+`-8.0 * ln(mean(r_a3))`, relative to the same computation on the
+`gate3_250_fixed` baseline. This is the OPPOSITE order of operations from
+option (a) (which logs/inverts per-row first, then averages) — do not
+confuse the two; they produce materially different numbers (see the
+recomputed Condition 1 table below).
+
+### Amendment 2 — Condition 3 metric scope (resolves HYP-vs-macro scope mismatch)
+
+**Ruling:** HYP-F1 adopted as the primary target metric; global Macro-F1
+retained as a secondary non-inferiority constraint.
+
+**This is a substantive change to Condition 3 as originally pre-registered
+above, not a clarification of ambiguous wording — recorded as an amendment
+for the audit trail.**
+
+- **Original Condition 3 (superseded):** disqualify if `r_diag` increases
+  by more than 5% while TRTR macro-F1 (all 6 classes) simultaneously drops
+  or stays flat.
+- **Amended Condition 3:**
+  - **Primary target:** `F1_HYP` must improve by ≥ +3.0 percentage points
+    (absolute) over the `gate3_250_fixed` baseline HYP-F1 to qualify as a
+    successful arm on this axis.
+  - **Secondary safety bound:** global Macro-F1 (6-class) must not drop by
+    more than 1.5 percentage points (absolute) relative to baseline. A drop
+    exceeding this bound disqualifies the arm regardless of HYP-F1
+    performance.
+
+### Amendment 3 — Seed protocol (resolves Stage 2 seed-convention ambiguity)
+
+**Ruling:** Two-stage approach, literal seed values (not `config.yaml`
+list indices) — per the email: "Do not rely on relative list indices in
+`config.yaml`—hardcode the actual seed integers so the run logs are fully
+reproducible for reviewer verification."
+
+- **Stage 1 (discovery, already complete):** all 5 arms (baseline +
+  α∈{0.75,0.50,0.25,0.00}) evaluated at seed=42, 250 iterations each. This
+  is the sweep already executed and verified 2026-07-22/23 — no rerun
+  needed.
+- **Stage 2 (paper verification):** rerun baseline (α=1.00) and the
+  winning α* only on literal seeds 43 and 44. **Not launched** — see
+  below, there is no qualifying α* to verify against baseline, so Stage 2
+  has no candidate and is not run.
+
+### Amendment 4 — "Stays flat" tolerance band (resolves undefined epsilon)
+
+**Ruling:** ±0.5 percentage points absolute Macro-F1.
+
+**Rule:** any Macro-F1 change within [-0.5, +0.5] percentage points
+(absolute, not relative %) relative to baseline is logged as
+"statistically flat / no change." This band applies to the secondary
+safety-bound check in Amendment 2, not as a standalone Condition 3 test.
+
+---
+
+### Final Condition 1/2/3 table (recomputed under the confirmed amendments above)
+
+Condition 1 uses the corrected distance-of-mean-reward statistic
+(Amendment 1); Condition 2 (KS test on `r_morph` vs. `gate3_250_fixed`) is
+unaffected by any amendment and reused as-is; Condition 3 uses the
+HYP-F1-primary / Macro-F1-secondary scope (Amendment 2). All four values
+per row are independently recomputed from `logs/*/rl_training_log.csv` and
+`outputs/mentor_eval/trtr_condition3_*/trtr_generated_eval.json` — not
+carried forward from the earlier (wrong-statistic) 2026-07-23 table.
+
+| α | Cond.1 dist-of-mean (≤8%) | Cond.2 KS p (>0.05) | Cond.3 primary HYP-F1 Δ (≥+3.0pp) | Cond.3 secondary Macro-F1 Δ (≥-1.5pp) | Overall |
+|---|---|---|---|---|---|
+| 0.75 | +3.47% PASS | 0.760186 PASS | -12.19pp FAIL | -3.37pp FAIL | **disqualified** (Cond. 3) |
+| 0.50 | +14.15% FAIL | 0.240918 PASS | -96.05pp FAIL | -8.57pp FAIL | **disqualified** (Cond. 1 + Cond. 3) |
+| 0.25 | -7.22% PASS | 0.000058 FAIL | -0.90pp FAIL | -6.92pp FAIL | **disqualified** (Cond. 2 + Cond. 3) |
+| 0.00 | -1.37% PASS | 0.000025 FAIL | +3.95pp PASS | +0.17pp PASS | **disqualified** (Cond. 2) |
+
+**Result: zero of the four relaxation arms qualify as `reliability_alpha*`.
+Per the pre-registered fallback rule, `alpha=1.00` (the existing production
+baseline, `gate3_250_fixed`) remains the design.** Dr. Balaji pre-authorized
+this specific outcome in the same email: "I am 100% comfortable with
+α = 1.00 remaining the default... If none of the relaxation arms beat the
+baseline while satisfying all non-inferiority constraints, that is still a
+valid scientific finding. It proves the original reliability weighting was
+necessary and optimal." No further sign-off round is required for this
+conclusion specifically.
+
+Note for the writeup: α=0.50 is the only arm failing Condition 1 at all
+under the corrected statistic, and it separately shows the RL training
+log's HYP `r_diag` destabilizing late in training (grad_norm spike at
+iter=247, not recovered by the iter=250 checkpoint save — see the HYP
+collapse investigation elsewhere in this document/session), consistent
+with its HYP-F1 collapsing to exactly 0.0 in the generated-sample eval.
+Two independent conditions (A3 divergence, HYP-F1 collapse) converging on
+the same arm is a real signal, not coincidence, and worth its own
+paragraph rather than being buried in the table.
+
+Stage 2 (seeds 43/44) is not launched — there is no α* candidate to verify
+against baseline, so it has nothing to verify. `run_stage2_verification.sh`
+remains drafted-not-executed, gated on `ALPHA_STAR` never being filled in
+under this outcome.

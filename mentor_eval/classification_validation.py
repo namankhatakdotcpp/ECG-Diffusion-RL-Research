@@ -25,6 +25,7 @@ Writes:
 
 Usage:
     python -m mentor_eval.classification_validation [--ckpt PATH] [--out-dir PATH]
+        [--n-gen-samples N]   # generated samples/class for Stage 2, default 100
 """
 
 from __future__ import annotations
@@ -263,7 +264,8 @@ def plot_roc_curves(roc_data: dict, out_path: Path, title: str):
     plt.close(fig)
 
 
-def run(ckpt_path: Path, out_dir: Path, cfg, seed: int, log, guidance_scale=None) -> None:
+def run(ckpt_path: Path, out_dir: Path, cfg, seed: int, log, guidance_scale=None,
+        n_gen_samples: int = 100) -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     ptbxl_dir = Path(cfg.paths.data.ptbxl)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -317,7 +319,7 @@ def run(ckpt_path: Path, out_dir: Path, cfg, seed: int, log, guidance_scale=None
         if trained_cls is None:
             skipped.append(cls)
             continue
-        samples, err = generate_for_class(loaded, trained_cls, n_samples=100, cfg=cfg, seed=seed, stats=prep_stats,
+        samples, err = generate_for_class(loaded, trained_cls, n_samples=n_gen_samples, cfg=cfg, seed=seed, stats=prep_stats,
                                           guidance_scale=guidance_scale)
         if err:
             skipped.append(cls)
@@ -362,6 +364,9 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--guidance-scale", type=float, default=None,
                         help="CFG guidance scale. None = no CFG (default behavior).")
+    parser.add_argument("--n-gen-samples", type=int, default=100,
+                        help="Generated samples per class for Stage 2 evaluation. "
+                             "Default 100 preserves original behavior (commit 0d42ca9).")
     args = parser.parse_args()
 
     cfg = load_config()
@@ -377,7 +382,8 @@ def main() -> None:
         )
     out_dir   = Path(args.out_dir) if args.out_dir else Path(cfg.paths.outputs.results).parent / "mentor_review" / "classification_validation"
     snapshot_before_write(out_dir)
-    run(ckpt_path, out_dir, cfg, args.seed, log, guidance_scale=args.guidance_scale)
+    run(ckpt_path, out_dir, cfg, args.seed, log, guidance_scale=args.guidance_scale,
+        n_gen_samples=args.n_gen_samples)
     print(f"✓ Outputs (whatever stage(s) completed) written to {out_dir}")
 
 

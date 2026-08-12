@@ -95,7 +95,6 @@ diffusion:
   n_layers: 6                 # kept for UNet backward-compat (unused by current Transformer backbone)
   d_ff: 1024                  # FFN hidden dimension (4× model_dim)
   dropout: 0.1
-  conditioning: adaln         # adaln (baseline) or adaln_cross_attn (disease-token cross-attention, additive)
   # Training
   n_epochs: 200
   batch_size: 32
@@ -174,7 +173,7 @@ reward:
     hrv:   0.13                # HRVReward               — HRV plausibility
   pca_components: 50          # PCA components for RealismReward
   pca_n_train_samples: 2000   # training records used to fit PCA
-  reliability_alpha: 1.0      # DiagnosticUtilityReward reliability interpolation:
+  reliability_alpha: 0.75      # DiagnosticUtilityReward reliability interpolation:
                                # reliability = alpha * per_class_f1 + (1 - alpha) * 1.0
                                # 1.0 = full F1 scaling (prior default), 0.0 = no scaling.
                                # See Roadmap/Stage_4_Optimization/Reward_Design_v2.md Section 4a.
